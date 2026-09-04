@@ -31,8 +31,7 @@
   },
   "permissions": [
     "downloads",
-    "storage",
-    "cookies"
+    "storage"
   ],
   "host_permissions": [
     "*://*.fanbox.cc/*",

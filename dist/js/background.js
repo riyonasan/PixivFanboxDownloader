@@ -131,43 +131,63 @@ class Eagle {
         if (url.startsWith('blob:')) {
             throw new Error('Eagle cannot register a blob URL');
         }
+        // Eagle cannot download paid FANBOX files with the extension's request
+        // headers. Fetch them in the service worker with the browser's cookies and
+        // pass the response to Eagle as a data URL instead.
+        const eagleURL = await this.getEagleURL(url);
         const folderId = await this.getFolderId(this.getFolderPath(fileName));
         const item = {
-            url,
+            url: eagleURL,
             name: this.getItemName(fileName),
             website,
             folderId,
-            headers: url.startsWith('data:')
+            headers: eagleURL.startsWith('data:')
                 ? undefined
-                : await this.getHeaders(url, website),
+                : this.getHeaders(website),
         };
         await this.request('item/addFromURL', item);
     }
-    async getHeaders(url, website) {
-        const headers = {
-            referer: website,
-        };
+    async getEagleURL(url) {
         let parsedURL;
         try {
             parsedURL = new URL(url);
         }
         catch {
-            return headers;
+            return url;
         }
         const hostname = parsedURL.hostname;
         if (parsedURL.protocol !== 'https:' ||
             (hostname !== 'fanbox.cc' && !hostname.endsWith('.fanbox.cc'))) {
-            return headers;
+            return url;
         }
-        const cookies = await chrome.cookies.getAll({ url });
-        const cookieHeader = cookies
-            .filter(({ name, value }) => name && value)
-            .map(({ name, value }) => `${name}=${value}`)
-            .join('; ');
-        if (cookieHeader) {
-            headers.cookie = cookieHeader;
+        let response;
+        try {
+            response = await fetch(url, { credentials: 'include' });
         }
-        return headers;
+        catch {
+            throw new Error('Unable to download FANBOX file (network error)');
+        }
+        if (!response.ok) {
+            throw new Error(`Unable to download FANBOX file (HTTP ${response.status})`);
+        }
+        let buffer;
+        try {
+            buffer = await response.arrayBuffer();
+        }
+        catch {
+            throw new Error('Unable to read FANBOX file response');
+        }
+        const bytes = new Uint8Array(buffer);
+        const chunkSize = 0x8000;
+        let binary = '';
+        for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+            binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+        }
+        const mimeType = response.headers.get('content-type') || 'application/octet-stream';
+        return `data:${mimeType};base64,${btoa(binary)}`;
+    }
+    getHeaders(website) {
+        return { referer: website };
     }
     getFolderPath(fileName) {
         const parts = fileName.split('/').filter((part) => part.length > 0);
