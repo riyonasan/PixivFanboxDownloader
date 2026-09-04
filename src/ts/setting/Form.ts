@@ -97,6 +97,16 @@ class Form {
   }
 
   private bindEvents() {
+    const eagleInput = this.form.saveToEagle
+    window.addEventListener(EVT.list.downloadStart, () => {
+      eagleInput.disabled = true
+    })
+    const enableEagleInput = () => {
+      eagleInput.disabled = false
+    }
+    window.addEventListener(EVT.list.downloadStop, enableEagleInput)
+    window.addEventListener(EVT.list.downloadComplete, enableEagleInput)
+
     // 为美化的表单控件绑定事件
     for (const item of this.allBeautifyInput) {
       const { input, span } = item

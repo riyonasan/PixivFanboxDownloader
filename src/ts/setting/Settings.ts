@@ -56,6 +56,7 @@ export interface SettingChangeData {
 }
 
 interface XzSetting {
+  saveToEagle: boolean
   image: boolean
   music: boolean
   video: boolean
@@ -131,6 +132,7 @@ class Settings {
 
   // 默认设置
   private readonly defaultSettings: XzSetting = {
+    saveToEagle: false,
     image: true,
     music: true,
     video: true,

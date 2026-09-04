@@ -7,7 +7,11 @@ import { fileName } from '../FileName'
 import { renderCommentsHtml } from '../RenderCommentsHtml'
 
 class CreateHtmlDocument {
-  public async create(data: PostBody, result: ResultMeta) {
+  public async create(
+    data: PostBody,
+    result: ResultMeta,
+    useRemoteSources: boolean = false,
+  ) {
     const postUrl = `https://www.fanbox.cc/@${encodeURIComponent(
       data.creatorId,
     )}/posts/${encodeURIComponent(data.id)}`
@@ -40,7 +44,13 @@ class CreateHtmlDocument {
               if (!image) {
                 return ''
               }
-              return this.renderPostImage(image, result, commonResult, htmlPath)
+              return this.renderPostImage(
+                image,
+                result,
+                commonResult,
+                htmlPath,
+                useRemoteSources,
+              )
             }
 
             if (block.type === 'file') {
@@ -56,6 +66,7 @@ class CreateHtmlDocument {
                 result,
                 commonResult,
                 htmlPath,
+                useRemoteSources,
               )
             }
 
@@ -116,6 +127,7 @@ class CreateHtmlDocument {
           result,
           commonResult,
           htmlPath,
+          useRemoteSources,
         )
       } else {
         // 前面已经处理了 article 和 entry 类型的投稿，现在剩余的类型有：'file' | 'image' | 'video' | 'text'
@@ -125,7 +137,13 @@ class CreateHtmlDocument {
           body =
             data.body.images
               .map((image) =>
-                this.renderPostImage(image, result, commonResult, htmlPath),
+                this.renderPostImage(
+                  image,
+                  result,
+                  commonResult,
+                  htmlPath,
+                  useRemoteSources,
+                ),
               )
               .join('\n') + body
         } else if (data.type === 'file') {
@@ -139,6 +157,7 @@ class CreateHtmlDocument {
                 result,
                 commonResult,
                 htmlPath,
+                useRemoteSources,
               ),
             )
             .join('\n')
@@ -158,7 +177,11 @@ class CreateHtmlDocument {
         ...cover,
       })
       const relativeCoverPath = this.getRelativePath(htmlPath, coverPath)
-      if (!body.includes(relativeCoverPath)) {
+      if (useRemoteSources) {
+        if (!body.includes(cover.url)) {
+          coverHtml = this.renderImage(cover.url, cover.name)
+        }
+      } else if (!body.includes(relativeCoverPath)) {
         coverHtml = this.renderImageSource(relativeCoverPath, cover.name)
       }
     }
@@ -253,11 +276,15 @@ class CreateHtmlDocument {
     result: ResultMeta,
     commonResult: CommonResult,
     htmlPath: string,
+    useRemoteSources: boolean,
   ) {
     const downloadedImage = result.files.find(
       (file) => file.fileID === image.id,
     )
     if (downloadedImage) {
+      if (useRemoteSources) {
+        return this.renderImage(downloadedImage.url, image.id)
+      }
       const imagePath = fileName.getFileName({
         ...commonResult,
         ...downloadedImage,
@@ -331,9 +358,16 @@ class CreateHtmlDocument {
     result: ResultMeta,
     commonResult: CommonResult,
     htmlPath: string,
+    useRemoteSources: boolean,
   ) {
     const downloadedFile = result.files.find((file) => file.fileID === fileId)
     if (downloadedFile) {
+      if (useRemoteSources) {
+        if (Config.fileType.image.includes(extension.toLowerCase())) {
+          return this.renderImage(downloadedFile.url, text)
+        }
+        return this.renderFileContent(downloadedFile.url, text, extension)
+      }
       const filePath = fileName.getFileName({
         ...commonResult,
         ...downloadedFile,
@@ -408,6 +442,7 @@ class CreateHtmlDocument {
     result: ResultMeta,
     commonResult: CommonResult,
     htmlPath: string,
+    useRemoteSources: boolean,
   ) {
     const document = new DOMParser().parseFromString(html, 'text/html')
     const allowedTags = new Set([
@@ -484,11 +519,20 @@ class CreateHtmlDocument {
               )
             : undefined
         if (downloadedImage) {
-          const imagePath = fileName.getFileName({
-            ...commonResult,
-            ...downloadedImage,
-          })
-          node.setAttribute('src', this.getRelativePath(htmlPath, imagePath))
+          if (useRemoteSources) {
+            const url = this.getSafeExternalUrl(downloadedImage.url)
+            if (url) {
+              node.setAttribute('src', url)
+            } else {
+              node.removeAttribute('src')
+            }
+          } else {
+            const imagePath = fileName.getFileName({
+              ...commonResult,
+              ...downloadedImage,
+            })
+            node.setAttribute('src', this.getRelativePath(htmlPath, imagePath))
+          }
         } else {
           const url = this.getSafeExternalUrl(node.getAttribute(urlAttribute)!)
           if (url) {

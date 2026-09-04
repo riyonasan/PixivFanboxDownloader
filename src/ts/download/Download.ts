@@ -67,7 +67,7 @@ class Download {
 
     // 检查是否是重复文件
     const url = arg.data.url
-    if (!url.startsWith('blob')) {
+    if (!this.arg.saveToEagle && !url.startsWith('blob')) {
       const duplicate = await downloadRecord.checkDeduplication(arg.data)
       if (duplicate) {
         return this.skipDownload(
@@ -85,8 +85,37 @@ class Download {
     // 重设当前下载栏的信息
     this.setProgressBar(0, 0)
 
-    // 向浏览器发送下载任务
-    this.browserDownload(url, this.fileName, arg.id, arg.taskBatch)
+    if (this.arg.saveToEagle) {
+      try {
+        const eagleURL = await this.getEagleURL(url)
+        this.eagleDownload(eagleURL, this.fileName, arg.id, arg.taskBatch)
+      } catch (error) {
+        this.eagleError(url, arg.id, arg.taskBatch, error)
+      }
+    } else {
+      // 向浏览器发送下载任务
+      this.browserDownload(url, this.fileName, arg.id, arg.taskBatch)
+    }
+  }
+
+  // Eagle API は blob URL を参照できないため、生成した本文だけ data URL に変換する。
+  private async getEagleURL(url: string) {
+    if (!url.startsWith('blob:')) {
+      return url
+    }
+
+    const response = await fetch(url)
+    if (!response.ok) {
+      throw new Error(`Unable to read generated file (${response.status})`)
+    }
+    const blob = await response.blob()
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result as string)
+      reader.onerror = () =>
+        reject(reader.error || new Error('FileReader error'))
+      reader.readAsDataURL(blob)
+    })
   }
 
   // 向浏览器发送下载任务
@@ -103,6 +132,44 @@ class Download {
       id,
       taskBatch,
       conflictAction: this.arg.conflictAction,
+    }
+
+    chrome.runtime.sendMessage(sendData)
+  }
+
+  private eagleDownload(
+    url: string,
+    fileName: string,
+    id: string,
+    taskBatch: number,
+  ) {
+    const sendData: SendToBackEndData = {
+      msg: 'add_to_eagle',
+      fileUrl: url,
+      fileName,
+      id,
+      taskBatch,
+      website: `https://www.fanbox.cc/@${encodeURIComponent(
+        this.arg.data.createID,
+      )}/posts/${encodeURIComponent(this.arg.data.postId)}`,
+    }
+
+    chrome.runtime.sendMessage(sendData)
+  }
+
+  private eagleError(
+    url: string,
+    id: string,
+    taskBatch: number,
+    error: unknown,
+  ) {
+    const sendData: SendToBackEndData = {
+      msg: 'eagle_error',
+      fileUrl: url,
+      fileName: this.fileName,
+      id,
+      taskBatch,
+      error: error instanceof Error ? error.message : String(error),
     }
 
     chrome.runtime.sendMessage(sendData)

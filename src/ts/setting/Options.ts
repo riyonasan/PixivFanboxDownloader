@@ -35,7 +35,7 @@ class Options {
   private wantPageEls!: WantPageEls
 
   // 保持显示的选项的 id
-  private readonly whiteList: number[] = [2, 21, 32, 51, 13, 17, 33, 60]
+  private readonly whiteList: number[] = [2, 21, 32, 51, 13, 17, 33, 60, 62]
 
   // 某些页面类型需要隐藏某些选项。当调用 hideOption 方法时，把选项 id 保存起来
   // 优先级高于 whiteList

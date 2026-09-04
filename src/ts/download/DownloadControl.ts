@@ -50,6 +50,8 @@ class DownloadControl {
 
   private downloaded: number = 0 // 已下载的任务数量
 
+  private saveToEagle = false
+
   private reTryTimer: number = 0 // 重试下载的定时器
 
   private wrapper: HTMLDivElement = document.createElement('div')
@@ -86,6 +88,18 @@ class DownloadControl {
     // 监听浏览器下载文件后，返回的消息
     chrome.runtime.onMessage.addListener((msg: DownloadedMsg) => {
       if (!this.taskBatch) {
+        return
+      }
+
+      if (msg.msg === 'eagle_error') {
+        const error = msg.err || 'unknown error'
+        log.error(`Eagle registration failed: ${error}`)
+        msgBox.once(
+          'eagleError',
+          `Eagle registration failed: ${Tools.escapeHtml(error)}`,
+          'error',
+        )
+        this.stopDownload()
         return
       }
 
@@ -144,9 +158,15 @@ class DownloadControl {
     })
 
     window.addEventListener(EVT.list.downloadComplete, () => {
-      this.setDownStateText(lang.transl('_下载完毕2'), Colors.textSuccess)
-      log.success(lang.transl('_下载完毕'), 2)
-      toast.success(lang.transl('_下载完毕2'), {
+      const completeText = this.saveToEagle
+        ? lang.transl('_Eagle登録受付完了')
+        : lang.transl('_下载完毕2')
+      const completeLog = this.saveToEagle
+        ? lang.transl('_Eagle登録受付完了')
+        : lang.transl('_下载完毕')
+      this.setDownStateText(completeText, Colors.textSuccess)
+      log.success(completeLog, 2)
+      toast.success(completeText, {
         position: 'topCenter',
       })
     })
@@ -306,7 +326,9 @@ class DownloadControl {
     this.reset()
     this.setDownloaded()
     this.taskBatch = new Date().getTime() // 修改本批下载任务的标记
+    this.saveToEagle = settings.saveToEagle
     this.setDownloadThread()
+    msgBox.resetOnce('eagleError')
 
     EVT.fire('downloadStart')
     msgBox.resetOnce('totalDownloadLimit')
@@ -446,6 +468,7 @@ class DownloadControl {
       throw new Error('There are no data to download')
     } else {
       let result = store.result[index]
+      const saveToEagle = this.saveToEagle
 
       // 对于文本数据，此时创建其 URL
       // 空正文的 HTML 也需要生成文件，否则无法保存只有资源的投稿
@@ -480,7 +503,11 @@ class DownloadControl {
               textContent: result,
             }
             result.text = [
-              await createHtmlDocument.create(result.htmlData!, resultMeta),
+              await createHtmlDocument.create(
+                result.htmlData!,
+                resultMeta,
+                saveToEagle,
+              ),
             ]
             result.ext = 'html'
           } else {
@@ -525,6 +552,7 @@ class DownloadControl {
         index: index,
         progressBarIndex: progressBarIndex,
         taskBatch: this.taskBatch,
+        saveToEagle,
         // 仅 HTML 文本需要覆盖，避免附件和图片被同名文件覆盖
         conflictAction:
           'text' in result && result.ext === 'html' ? 'overwrite' : undefined,

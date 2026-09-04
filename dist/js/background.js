@@ -2,11 +2,11 @@
 /******/ 	"use strict";
 /******/ 	var __webpack_modules__ = ({
 
-/***/ "./src/ts/TotalDownload.ts":
+/***/ "./src/ts/TotalDownload.ts"
 /*!*********************************!*\
   !*** ./src/ts/TotalDownload.ts ***!
   \*********************************/
-/***/ ((__unused_webpack_module, __webpack_exports__, __webpack_require__) => {
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
 
 __webpack_require__.r(__webpack_exports__);
 /* harmony export */ __webpack_require__.d(__webpack_exports__, {
@@ -108,28 +108,191 @@ const totalDownload = new TotalDownload();
 
 
 
-/***/ })
+/***/ },
+
+/***/ "./src/ts/eagle/Eagle.ts"
+/*!*******************************!*\
+  !*** ./src/ts/eagle/Eagle.ts ***!
+  \*******************************/
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   eagle: () => (/* binding */ eagle)
+/* harmony export */ });
+// Eagle のローカル API との接続だけを担当する。
+class Eagle {
+    apiURL = 'http://localhost:41595/api';
+    folderListPromise = null;
+    folderIdCache = new Map();
+    cacheScope = '';
+    async addFromURL(url, fileName, website, scope) {
+        this.resetCache(scope);
+        if (url.startsWith('blob:')) {
+            throw new Error('Eagle cannot register a blob URL');
+        }
+        const folderId = await this.getFolderId(this.getFolderPath(fileName));
+        const item = {
+            url,
+            name: this.getItemName(fileName),
+            website,
+            folderId,
+            headers: url.startsWith('data:') ? undefined : { referer: website },
+        };
+        await this.request('item/addFromURL', item);
+    }
+    getFolderPath(fileName) {
+        const parts = fileName.split('/').filter((part) => part.length > 0);
+        parts.pop();
+        // 通常の命名規則には fanbox が含まれるため、Eagle では大文字の
+        // FANBOX フォルダをルートとして使う。
+        if (parts[0]?.toLowerCase() === 'fanbox') {
+            parts.shift();
+        }
+        return ['FANBOX', ...parts];
+    }
+    getItemName(fileName) {
+        const name = fileName.split('/').pop() || fileName;
+        const extensionIndex = name.lastIndexOf('.');
+        return extensionIndex > 0 ? name.substring(0, extensionIndex) : name;
+    }
+    async getFolderId(path) {
+        let parent;
+        for (const name of path) {
+            const cacheKey = `${parent || ''}/${name}`;
+            let folderPromise = this.folderIdCache.get(cacheKey);
+            if (!folderPromise) {
+                folderPromise = this.findOrCreateFolder(name, parent).catch((error) => {
+                    this.folderIdCache.delete(cacheKey);
+                    throw error;
+                });
+                this.folderIdCache.set(cacheKey, folderPromise);
+            }
+            parent = await folderPromise;
+        }
+        if (!parent) {
+            throw new Error('Eagle folder path is empty');
+        }
+        return parent;
+    }
+    async findOrCreateFolder(name, parent) {
+        const folders = await this.listFolders();
+        const existing = this.findDirectFolder(folders, name, parent);
+        if (existing) {
+            return existing.id;
+        }
+        const created = await this.request('folder/create', {
+            folderName: name,
+            ...(parent ? { parent } : {}),
+        });
+        if (!created || !created.id) {
+            throw new Error(`Eagle did not return a folder ID for "${name}"`);
+        }
+        // 同じ処理中に別の記事から参照された場合も、作成直後のフォルダを
+        // 再利用できるように一覧へ反映する。
+        if (parent) {
+            const parentFolder = this.findFolderById(folders, parent);
+            if (parentFolder) {
+                parentFolder.children ||= [];
+                parentFolder.children.push(created);
+            }
+        }
+        else {
+            folders.push(created);
+        }
+        return created.id;
+    }
+    listFolders() {
+        if (!this.folderListPromise) {
+            this.folderListPromise = this.request('folder/list')
+                .then((folders) => folders || [])
+                .catch((error) => {
+                this.folderListPromise = null;
+                throw error;
+            });
+        }
+        return this.folderListPromise;
+    }
+    findDirectFolder(folders, name, parent) {
+        const parentFolder = parent ? this.findFolderById(folders, parent) : null;
+        const siblings = parent ? parentFolder?.children || [] : folders;
+        const matches = siblings.filter((folder) => folder.name === name);
+        if (matches.length > 1) {
+            throw new Error(`Multiple Eagle folders named "${name}" exist`);
+        }
+        return matches[0];
+    }
+    findFolderById(folders, id) {
+        for (const folder of folders) {
+            if (folder.id === id) {
+                return folder;
+            }
+            const child = folder.children && this.findFolderById(folder.children, id);
+            if (child) {
+                return child;
+            }
+        }
+        return undefined;
+    }
+    resetCache(scope) {
+        if (scope === this.cacheScope) {
+            return;
+        }
+        this.cacheScope = scope;
+        this.folderListPromise = null;
+        this.folderIdCache.clear();
+    }
+    async request(path, body) {
+        const response = await fetch(`${this.apiURL}/${path}`, {
+            method: body === undefined ? 'GET' : 'POST',
+            headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+            body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        let result;
+        try {
+            result = (await response.json());
+        }
+        catch {
+            throw new Error(`Eagle API returned an invalid response (${response.status})`);
+        }
+        if (!response.ok || result.status !== 'success') {
+            throw new Error(result.message || `Eagle API request failed (${response.status})`);
+        }
+        return result.data;
+    }
+}
+const eagle = new Eagle();
+
+
+
+/***/ }
 
 /******/ 	});
 /************************************************************************/
 /******/ 	// The module cache
-/******/ 	var __webpack_module_cache__ = {};
+/******/ 	const __webpack_module_cache__ = {};
 /******/ 	
 /******/ 	// The require function
 /******/ 	function __webpack_require__(moduleId) {
 /******/ 		// Check if module is in cache
-/******/ 		var cachedModule = __webpack_module_cache__[moduleId];
+/******/ 		const cachedModule = __webpack_module_cache__[moduleId];
 /******/ 		if (cachedModule !== undefined) {
 /******/ 			return cachedModule.exports;
 /******/ 		}
 /******/ 		// Create a new module (and put it into the cache)
-/******/ 		var module = __webpack_module_cache__[moduleId] = {
+/******/ 		const module = __webpack_module_cache__[moduleId] = {
 /******/ 			// no module.id needed
 /******/ 			// no module.loaded needed
 /******/ 			exports: {}
 /******/ 		};
 /******/ 	
 /******/ 		// Execute the module function
+/******/ 		if (!(moduleId in __webpack_modules__)) {
+/******/ 			delete __webpack_module_cache__[moduleId];
+/******/ 			const e = new Error("Cannot find module '" + moduleId + "'");
+/******/ 			e.code = 'MODULE_NOT_FOUND';
+/******/ 			throw e;
+/******/ 		}
 /******/ 		__webpack_modules__[moduleId](module, module.exports, __webpack_require__);
 /******/ 	
 /******/ 		// Return the exports of the module
@@ -138,35 +301,27 @@ const totalDownload = new TotalDownload();
 /******/ 	
 /************************************************************************/
 /******/ 	/* webpack/runtime/define property getters */
-/******/ 	(() => {
-/******/ 		// define getter functions for harmony exports
-/******/ 		__webpack_require__.d = (exports, definition) => {
-/******/ 			for(var key in definition) {
-/******/ 				if(__webpack_require__.o(definition, key) && !__webpack_require__.o(exports, key)) {
-/******/ 					Object.defineProperty(exports, key, { enumerable: true, get: definition[key] });
-/******/ 				}
+/******/ 	// define getter/value functions for harmony exports
+/******/ 	__webpack_require__.d = (exports, definition) => {
+/******/ 		for(var key in definition) {
+/******/ 			if(__webpack_require__.o(definition, key) && !__webpack_require__.o(exports, key)) {
+/******/ 				Object.defineProperty(exports, key, { enumerable: true, get: definition[key] });
 /******/ 			}
-/******/ 		};
-/******/ 	})();
+/******/ 		}
+/******/ 	};
 /******/ 	
 /******/ 	/* webpack/runtime/hasOwnProperty shorthand */
-/******/ 	(() => {
-/******/ 		__webpack_require__.o = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop))
-/******/ 	})();
+/******/ 	__webpack_require__.o = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop));
 /******/ 	
 /******/ 	/* webpack/runtime/make namespace object */
-/******/ 	(() => {
-/******/ 		// define __esModule on exports
-/******/ 		__webpack_require__.r = (exports) => {
-/******/ 			if(typeof Symbol !== 'undefined' && Symbol.toStringTag) {
-/******/ 				Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
-/******/ 			}
-/******/ 			Object.defineProperty(exports, '__esModule', { value: true });
-/******/ 		};
-/******/ 	})();
+/******/ 	// define __esModule on exports
+/******/ 	__webpack_require__.r = (exports) => {
+/******/ 		Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
+/******/ 		Object.defineProperty(exports, '__esModule', { value: true });
+/******/ 	};
 /******/ 	
 /************************************************************************/
-var __webpack_exports__ = {};
+let __webpack_exports__ = {};
 // This entry needs to be wrapped in an IIFE because it needs to be isolated against other modules in the chunk.
 (() => {
 /*!******************************!*\
@@ -174,6 +329,8 @@ var __webpack_exports__ = {};
   \******************************/
 __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _TotalDownload__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ./TotalDownload */ "./src/ts/TotalDownload.ts");
+/* harmony import */ var _eagle_Eagle__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ./eagle/Eagle */ "./src/ts/eagle/Eagle.ts");
+
 
 // 当点击扩展图标时，显示/隐藏下载面板
 chrome.action.onClicked.addListener(function (tab) {
@@ -198,6 +355,44 @@ let batchNo = {};
 const fileNameList = new Map();
 // 接收下载请求
 chrome.runtime.onMessage.addListener(async function (msg, sender) {
+    if (msg.msg === 'add_to_eagle' || msg.msg === 'eagle_error') {
+        const tabId = sender.tab?.id;
+        if (tabId === undefined) {
+            return false;
+        }
+        const data = {
+            url: msg.fileUrl,
+            id: msg.id,
+            tabId,
+            uuid: false,
+            size: -1,
+            source: 'eagle',
+        };
+        if (msg.msg === 'eagle_error') {
+            chrome.tabs.sendMessage(tabId, {
+                msg: 'eagle_error',
+                data,
+                err: msg.error || 'Unable to prepare the file for Eagle',
+            });
+            return false;
+        }
+        try {
+            if (!msg.website) {
+                throw new Error('The FANBOX post URL is missing');
+            }
+            await _eagle_Eagle__WEBPACK_IMPORTED_MODULE_1__.eagle.addFromURL(msg.fileUrl, msg.fileName, msg.website, `${tabId}:${msg.taskBatch}`);
+            chrome.tabs.sendMessage(tabId, { msg: 'downloaded', data });
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            chrome.tabs.sendMessage(tabId, {
+                msg: 'eagle_error',
+                data,
+                err: message,
+            });
+        }
+        return false;
+    }
     // 接收下载任务
     if (msg.msg === 'send_download') {
         // 当处于初始状态时，或者变量被回收了，就从存储中读取数据储存在变量中

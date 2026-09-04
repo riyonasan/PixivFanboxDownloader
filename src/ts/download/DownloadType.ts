@@ -6,6 +6,7 @@ export interface downloadArgument {
   index: number
   progressBarIndex: number
   taskBatch: number
+  saveToEagle: boolean
   conflictAction?: 'uniquify' | 'overwrite' | 'prompt'
 }
 
@@ -16,6 +17,8 @@ export interface SendToBackEndData {
   fileName: string
   id: string
   taskBatch: number
+  website?: string
+  error?: string
   conflictAction?: 'uniquify' | 'overwrite' | 'prompt'
 }
 
@@ -26,6 +29,7 @@ export interface DonwloadSuccessData {
   tabId: number
   uuid: boolean
   size: number
+  source?: 'eagle'
 }
 
 export interface DonwloadSkipData {

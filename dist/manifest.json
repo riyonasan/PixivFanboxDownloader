@@ -34,7 +34,8 @@
     "storage"
   ],
   "host_permissions": [
-    "*://*.fanbox.cc/*"
+    "*://*.fanbox.cc/*",
+    "http://localhost:41595/*"
   ],
   "web_accessible_resources": [
     {

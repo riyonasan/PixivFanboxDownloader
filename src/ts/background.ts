@@ -1,5 +1,10 @@
-import { DonwloadListData, SendToBackEndData } from './download/DownloadType'
+import {
+  DonwloadListData,
+  DonwloadSuccessData,
+  SendToBackEndData,
+} from './download/DownloadType'
 import { totalDownload } from './TotalDownload'
+import { eagle } from './eagle/Eagle'
 
 // 当点击扩展图标时，显示/隐藏下载面板
 chrome.action.onClicked.addListener(function (tab) {
@@ -41,6 +46,52 @@ chrome.runtime.onMessage.addListener(async function (
   msg: SendToBackEndData,
   sender,
 ) {
+  if (msg.msg === 'add_to_eagle' || msg.msg === 'eagle_error') {
+    const tabId = sender.tab?.id
+    if (tabId === undefined) {
+      return false
+    }
+
+    const data: DonwloadSuccessData = {
+      url: msg.fileUrl,
+      id: msg.id,
+      tabId,
+      uuid: false,
+      size: -1,
+      source: 'eagle',
+    }
+
+    if (msg.msg === 'eagle_error') {
+      chrome.tabs.sendMessage(tabId, {
+        msg: 'eagle_error',
+        data,
+        err: msg.error || 'Unable to prepare the file for Eagle',
+      })
+      return false
+    }
+
+    try {
+      if (!msg.website) {
+        throw new Error('The FANBOX post URL is missing')
+      }
+      await eagle.addFromURL(
+        msg.fileUrl,
+        msg.fileName,
+        msg.website,
+        `${tabId}:${msg.taskBatch}`,
+      )
+      chrome.tabs.sendMessage(tabId, { msg: 'downloaded', data })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      chrome.tabs.sendMessage(tabId, {
+        msg: 'eagle_error',
+        data,
+        err: message,
+      })
+    }
+    return false
+  }
+
   // 接收下载任务
   if (msg.msg === 'send_download') {
     // 当处于初始状态时，或者变量被回收了，就从存储中读取数据储存在变量中

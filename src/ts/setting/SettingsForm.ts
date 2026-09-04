@@ -1,4 +1,5 @@
 export interface SettingsForm extends HTMLFormElement {
+  saveToEagle: HTMLInputElement
   image: HTMLInputElement
   music: HTMLInputElement
   video: HTMLInputElement

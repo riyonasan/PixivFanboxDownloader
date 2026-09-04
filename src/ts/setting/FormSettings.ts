@@ -34,6 +34,7 @@ class FormSettings {
   // 没有填写 userSetName 字段，因为这个字段由 nameRuleManager 管理
   private readonly inputFileds: InputFileds = {
     checkbox: [
+      'saveToEagle',
       'image',
       'music',
       'video',
