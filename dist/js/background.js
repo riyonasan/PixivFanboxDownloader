@@ -137,9 +137,37 @@ class Eagle {
             name: this.getItemName(fileName),
             website,
             folderId,
-            headers: url.startsWith('data:') ? undefined : { referer: website },
+            headers: url.startsWith('data:')
+                ? undefined
+                : await this.getHeaders(url, website),
         };
         await this.request('item/addFromURL', item);
+    }
+    async getHeaders(url, website) {
+        const headers = {
+            referer: website,
+        };
+        let parsedURL;
+        try {
+            parsedURL = new URL(url);
+        }
+        catch {
+            return headers;
+        }
+        const hostname = parsedURL.hostname;
+        if (parsedURL.protocol !== 'https:' ||
+            (hostname !== 'fanbox.cc' && !hostname.endsWith('.fanbox.cc'))) {
+            return headers;
+        }
+        const cookies = await chrome.cookies.getAll({ url });
+        const cookieHeader = cookies
+            .filter(({ name, value }) => name && value)
+            .map(({ name, value }) => `${name}=${value}`)
+            .join('; ');
+        if (cookieHeader) {
+            headers.cookie = cookieHeader;
+        }
+        return headers;
     }
     getFolderPath(fileName) {
         const parts = fileName.split('/').filter((part) => part.length > 0);
