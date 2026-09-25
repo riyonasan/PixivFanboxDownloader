@@ -13,6 +13,7 @@ import { lang } from '../Lang'
 import { log } from '../Log'
 import { states } from '../States'
 import { downloadInterval } from './DownloadInterval'
+import { settings } from '../setting/Settings'
 
 class Download {
   constructor(progressBarIndex: number, data: downloadArgument) {
@@ -83,6 +84,23 @@ class Download {
       }
     }
 
+    if (this.arg.saveToEagle && settings.deduplication) {
+      try {
+        if (await this.checkExistingInEagle(arg)) {
+          await downloadRecord.recordEagleSuccess(
+            downloadRecord.getEagleRecordKey(arg.data),
+          )
+          return this.skipDownload(
+            { id: arg.id, reason: 'duplicate' },
+            lang.transl('_跳过下载因为重复文件', this.fileName),
+          )
+        }
+      } catch (error) {
+        this.eagleError(url, arg.id, arg.taskBatch, error)
+        return
+      }
+    }
+
     await downloadInterval.wait()
 
     // 重设当前下载栏的信息
@@ -99,6 +117,29 @@ class Download {
       // 向浏览器发送下载任务
       this.browserDownload(url, this.fileName, arg.id, arg.taskBatch)
     }
+  }
+
+  private checkExistingInEagle(arg: downloadArgument) {
+    const sendData: SendToBackEndData = {
+      msg: 'check_eagle',
+      fileUrl: arg.data.url,
+      fileName: this.fileName,
+      id: arg.id,
+      taskBatch: arg.taskBatch,
+    }
+    return new Promise<boolean>((resolve, reject) => {
+      chrome.runtime.sendMessage(sendData, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message))
+        } else if (response?.error) {
+          reject(new Error(response.error))
+        } else if (typeof response?.exists !== 'boolean') {
+          reject(new Error('Eagle check returned no result'))
+        } else {
+          resolve(response.exists)
+        }
+      })
+    })
   }
 
   // Eagle API は blob URL を参照できないため、生成した本文だけ data URL に変換する。

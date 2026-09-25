@@ -125,6 +125,7 @@ class Eagle {
     apiURL = 'http://localhost:41595/api';
     folderListPromise = null;
     folderIdCache = new Map();
+    folderItemsCache = new Map();
     cacheScope = '';
     async addFromURL(url, fileName, website, scope) {
         this.resetCache(scope);
@@ -146,6 +147,56 @@ class Eagle {
                 : this.getHeaders(website),
         };
         await this.request('item/addFromURL', item);
+    }
+    async hasExisting(fileName, scope) {
+        this.resetCache(scope);
+        const folders = await this.listFolders();
+        let parent;
+        for (const name of this.getFolderPath(fileName)) {
+            const folder = this.findDirectFolder(folders, name, parent);
+            if (!folder) {
+                return false;
+            }
+            parent = folder.id;
+        }
+        if (!parent) {
+            return false;
+        }
+        const folderId = parent;
+        const finalName = fileName.split('/').pop() || fileName;
+        const extensionIndex = finalName.lastIndexOf('.');
+        const extension = extensionIndex > 0 ? finalName.substring(extensionIndex + 1) : '';
+        const name = this.getItemName(fileName);
+        const items = await this.listFolderItems(folderId);
+        return items.some((item) => !item.isDeleted &&
+            item.folders.includes(folderId) &&
+            item.name === name &&
+            item.ext.toLowerCase() === extension.toLowerCase());
+    }
+    listFolderItems(folderId) {
+        let itemsPromise = this.folderItemsCache.get(folderId);
+        if (!itemsPromise) {
+            itemsPromise = this.fetchFolderItems(folderId).catch((error) => {
+                this.folderItemsCache.delete(folderId);
+                throw error;
+            });
+            this.folderItemsCache.set(folderId, itemsPromise);
+        }
+        return itemsPromise;
+    }
+    async fetchFolderItems(folderId) {
+        const items = [];
+        const limit = 1000;
+        while (true) {
+            const page = await this.request(`item/list?folders=${encodeURIComponent(folderId)}&limit=${limit}&offset=${items.length}`);
+            if (!Array.isArray(page)) {
+                throw new Error('Eagle returned an invalid item list');
+            }
+            items.push(...page);
+            if (page.length < limit) {
+                return items;
+            }
+        }
     }
     async getEagleURL(url) {
         let parsedURL;
@@ -289,6 +340,7 @@ class Eagle {
         this.cacheScope = scope;
         this.folderListPromise = null;
         this.folderIdCache.clear();
+        this.folderItemsCache.clear();
     }
     async request(path, body) {
         const response = await fetch(`${this.apiURL}/${path}`, {
@@ -402,7 +454,25 @@ let dlData = {};
 let batchNo = {};
 const fileNameList = new Map();
 // 接收下载请求
-chrome.runtime.onMessage.addListener(async function (msg, sender) {
+chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
+    if (msg.msg === 'check_eagle') {
+        const tabId = sender.tab?.id;
+        if (tabId === undefined) {
+            sendResponse({ error: 'Eagle check requires a browser tab' });
+            return false;
+        }
+        _eagle_Eagle__WEBPACK_IMPORTED_MODULE_1__.eagle
+            .hasExisting(msg.fileName, `${tabId}:${msg.taskBatch}`)
+            .then((exists) => sendResponse({ exists }))
+            .catch((error) => sendResponse({
+            error: error instanceof Error ? error.message : String(error),
+        }));
+        return true;
+    }
+    void handleDownloadMessage(msg, sender);
+    return false;
+});
+async function handleDownloadMessage(msg, sender) {
     if (msg.msg === 'add_to_eagle' || msg.msg === 'eagle_error') {
         const tabId = sender.tab?.id;
         if (tabId === undefined) {
@@ -486,7 +556,7 @@ chrome.runtime.onMessage.addListener(async function (msg, sender) {
             saveAs: false,
         });
     }
-});
+}
 // 判断文件名是否变成了 UUID 格式。因为文件名处于整个绝对路径的中间，所以没加首尾标记 ^ $
 const UUIDRegexp = /[0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}/;
 // 监听下载事件

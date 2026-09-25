@@ -21,11 +21,22 @@ interface EagleItemData {
   }
 }
 
+interface EagleListedItem {
+  name: string
+  ext: string
+  folders: string[]
+  isDeleted: boolean
+}
+
 // Eagle のローカル API との接続だけを担当する。
 class Eagle {
   private readonly apiURL = 'http://localhost:41595/api'
   private folderListPromise: Promise<EagleFolder[]> | null = null
   private readonly folderIdCache = new Map<string, Promise<string>>()
+  private readonly folderItemsCache = new Map<
+    string,
+    Promise<EagleListedItem[]>
+  >()
   private cacheScope = ''
 
   public async addFromURL(
@@ -57,6 +68,66 @@ class Eagle {
     await this.request('item/addFromURL', item)
   }
 
+  public async hasExisting(fileName: string, scope: string) {
+    this.resetCache(scope)
+    const folders = await this.listFolders()
+    let parent: string | undefined
+    for (const name of this.getFolderPath(fileName)) {
+      const folder = this.findDirectFolder(folders, name, parent)
+      if (!folder) {
+        return false
+      }
+      parent = folder.id
+    }
+    if (!parent) {
+      return false
+    }
+    const folderId = parent
+
+    const finalName = fileName.split('/').pop() || fileName
+    const extensionIndex = finalName.lastIndexOf('.')
+    const extension =
+      extensionIndex > 0 ? finalName.substring(extensionIndex + 1) : ''
+    const name = this.getItemName(fileName)
+    const items = await this.listFolderItems(folderId)
+    return items.some(
+      (item) =>
+        !item.isDeleted &&
+        item.folders.includes(folderId) &&
+        item.name === name &&
+        item.ext.toLowerCase() === extension.toLowerCase(),
+    )
+  }
+
+  private listFolderItems(folderId: string) {
+    let itemsPromise = this.folderItemsCache.get(folderId)
+    if (!itemsPromise) {
+      itemsPromise = this.fetchFolderItems(folderId).catch((error) => {
+        this.folderItemsCache.delete(folderId)
+        throw error
+      })
+      this.folderItemsCache.set(folderId, itemsPromise)
+    }
+    return itemsPromise
+  }
+
+  private async fetchFolderItems(folderId: string) {
+    const items: EagleListedItem[] = []
+    const limit = 1000
+    while (true) {
+      const page = await this.request<EagleListedItem[]>(
+        `item/list?folders=${encodeURIComponent(folderId)}&limit=${limit}&offset=${items.length}`,
+      )
+      if (!Array.isArray(page)) {
+        throw new Error('Eagle returned an invalid item list')
+      }
+      items.push(...page)
+      if (page.length < limit) {
+        return items
+      }
+    }
+  }
+
   private async getEagleURL(url: string) {
     let parsedURL: URL
     try {
@@ -80,7 +151,9 @@ class Eagle {
       throw new Error('Unable to download FANBOX file (network error)')
     }
     if (!response.ok) {
-      throw new Error(`Unable to download FANBOX file (HTTP ${response.status})`)
+      throw new Error(
+        `Unable to download FANBOX file (HTTP ${response.status})`,
+      )
     }
 
     let buffer: ArrayBuffer
@@ -228,6 +301,7 @@ class Eagle {
     this.cacheScope = scope
     this.folderListPromise = null
     this.folderIdCache.clear()
+    this.folderItemsCache.clear()
   }
 
   private async request<T>(path: string, body?: object) {

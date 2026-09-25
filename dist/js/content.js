@@ -5158,7 +5158,9 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _Log__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(/*! ../Log */ "./src/ts/Log.ts");
 /* harmony import */ var _States__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(/*! ../States */ "./src/ts/States.ts");
 /* harmony import */ var _DownloadInterval__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(/*! ./DownloadInterval */ "./src/ts/download/DownloadInterval.ts");
+/* harmony import */ var _setting_Settings__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(/*! ../setting/Settings */ "./src/ts/setting/Settings.ts");
 // 下载文件，并发送给浏览器下载
+
 
 
 
@@ -5216,6 +5218,18 @@ class Download {
                 }, _Lang__WEBPACK_IMPORTED_MODULE_4__.lang.transl('_跳过下载因为重复文件', this.fileName));
             }
         }
+        if (this.arg.saveToEagle && _setting_Settings__WEBPACK_IMPORTED_MODULE_8__.settings.deduplication) {
+            try {
+                if (await this.checkExistingInEagle(arg)) {
+                    await _DownloadRecord__WEBPACK_IMPORTED_MODULE_3__.downloadRecord.recordEagleSuccess(_DownloadRecord__WEBPACK_IMPORTED_MODULE_3__.downloadRecord.getEagleRecordKey(arg.data));
+                    return this.skipDownload({ id: arg.id, reason: 'duplicate' }, _Lang__WEBPACK_IMPORTED_MODULE_4__.lang.transl('_跳过下载因为重复文件', this.fileName));
+                }
+            }
+            catch (error) {
+                this.eagleError(url, arg.id, arg.taskBatch, error);
+                return;
+            }
+        }
         await _DownloadInterval__WEBPACK_IMPORTED_MODULE_7__.downloadInterval.wait();
         // 重设当前下载栏的信息
         this.setProgressBar(0, 0);
@@ -5232,6 +5246,31 @@ class Download {
             // 向浏览器发送下载任务
             this.browserDownload(url, this.fileName, arg.id, arg.taskBatch);
         }
+    }
+    checkExistingInEagle(arg) {
+        const sendData = {
+            msg: 'check_eagle',
+            fileUrl: arg.data.url,
+            fileName: this.fileName,
+            id: arg.id,
+            taskBatch: arg.taskBatch,
+        };
+        return new Promise((resolve, reject) => {
+            chrome.runtime.sendMessage(sendData, (response) => {
+                if (chrome.runtime.lastError) {
+                    reject(new Error(chrome.runtime.lastError.message));
+                }
+                else if (response?.error) {
+                    reject(new Error(response.error));
+                }
+                else if (typeof response?.exists !== 'boolean') {
+                    reject(new Error('Eagle check returned no result'));
+                }
+                else {
+                    resolve(response.exists);
+                }
+            });
+        });
     }
     // Eagle API は blob URL を参照できないため、生成した本文だけ data URL に変換する。
     async getEagleURL(url) {

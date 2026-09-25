@@ -42,9 +42,35 @@ type name = string
 const fileNameList: Map<url, name> = new Map()
 
 // 接收下载请求
-chrome.runtime.onMessage.addListener(async function (
+chrome.runtime.onMessage.addListener(function (
   msg: SendToBackEndData,
   sender,
+  sendResponse,
+) {
+  if (msg.msg === 'check_eagle') {
+    const tabId = sender.tab?.id
+    if (tabId === undefined) {
+      sendResponse({ error: 'Eagle check requires a browser tab' })
+      return false
+    }
+    eagle
+      .hasExisting(msg.fileName, `${tabId}:${msg.taskBatch}`)
+      .then((exists) => sendResponse({ exists }))
+      .catch((error) =>
+        sendResponse({
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      )
+    return true
+  }
+
+  void handleDownloadMessage(msg, sender)
+  return false
+})
+
+async function handleDownloadMessage(
+  msg: SendToBackEndData,
+  sender: chrome.runtime.MessageSender,
 ) {
   if (msg.msg === 'add_to_eagle' || msg.msg === 'eagle_error') {
     const tabId = sender.tab?.id
@@ -143,7 +169,7 @@ chrome.runtime.onMessage.addListener(async function (
       saveAs: false,
     })
   }
-})
+}
 
 // 判断文件名是否变成了 UUID 格式。因为文件名处于整个绝对路径的中间，所以没加首尾标记 ^ $
 const UUIDRegexp =
