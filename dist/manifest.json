@@ -31,7 +31,8 @@
   },
   "permissions": [
     "downloads",
-    "storage"
+    "storage",
+    "alarms"
   ],
   "host_permissions": [
     "*://*.fanbox.cc/*",

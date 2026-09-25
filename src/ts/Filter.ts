@@ -4,6 +4,8 @@ import { Config } from './Config'
 import { SettingKeys, settings } from './setting/Settings'
 import { msgBox } from './MsgBox'
 import { lang } from './Lang'
+import { getAutoProfile } from './auto/AutoSession'
+import { matchesAutoFee } from './auto/AutoTypes'
 
 /** 过滤选项，所有字段都是可选的 */
 interface FilterOption {
@@ -250,6 +252,11 @@ class Filter {
       return true
     }
 
+    const autoProfile = getAutoProfile()
+    if (autoProfile) {
+      return matchesAutoFee(autoProfile, fee)
+    }
+
     if (fee > 0) {
       return settings.pay
     } else {
@@ -258,6 +265,9 @@ class Filter {
   }
 
   private checkfeeRange(fee: FilterOption['fee']) {
+    if (getAutoProfile()) {
+      return true
+    }
     if (fee === undefined || !settings.feeSwitch) {
       return true
     }

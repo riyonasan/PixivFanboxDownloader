@@ -5,6 +5,7 @@ import {
 } from './download/DownloadType'
 import { totalDownload } from './TotalDownload'
 import { eagle } from './eagle/Eagle'
+import './auto/AutoScheduler'
 
 // 当点击扩展图标时，显示/隐藏下载面板
 chrome.action.onClicked.addListener(function (tab) {

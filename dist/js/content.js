@@ -1106,6 +1106,10 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _setting_Settings__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! ./setting/Settings */ "./src/ts/setting/Settings.ts");
 /* harmony import */ var _MsgBox__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! ./MsgBox */ "./src/ts/MsgBox.ts");
 /* harmony import */ var _Lang__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(/*! ./Lang */ "./src/ts/Lang.ts");
+/* harmony import */ var _auto_AutoSession__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(/*! ./auto/AutoSession */ "./src/ts/auto/AutoSession.ts");
+/* harmony import */ var _auto_AutoTypes__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(/*! ./auto/AutoTypes */ "./src/ts/auto/AutoTypes.ts");
+
+
 
 
 
@@ -1277,6 +1281,10 @@ class Filter {
         if (fee === undefined) {
             return true;
         }
+        const autoProfile = (0,_auto_AutoSession__WEBPACK_IMPORTED_MODULE_6__.getAutoProfile)();
+        if (autoProfile) {
+            return (0,_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_7__.matchesAutoFee)(autoProfile, fee);
+        }
         if (fee > 0) {
             return _setting_Settings__WEBPACK_IMPORTED_MODULE_3__.settings.pay;
         }
@@ -1285,6 +1293,9 @@ class Filter {
         }
     }
     checkfeeRange(fee) {
+        if ((0,_auto_AutoSession__WEBPACK_IMPORTED_MODULE_6__.getAutoProfile)()) {
+            return true;
+        }
         if (fee === undefined || !_setting_Settings__WEBPACK_IMPORTED_MODULE_3__.settings.feeSwitch) {
             return true;
         }
@@ -1430,6 +1441,8 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _Log__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(/*! ./Log */ "./src/ts/Log.ts");
 /* harmony import */ var _PageType__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(/*! ./PageType */ "./src/ts/PageType.ts");
 /* harmony import */ var _download_SaveFanCard__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(/*! ./download/SaveFanCard */ "./src/ts/download/SaveFanCard.ts");
+/* harmony import */ var _auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(/*! ./auto/AutoTypes */ "./src/ts/auto/AutoTypes.ts");
+
 
 
 
@@ -1447,6 +1460,13 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
     crawlFlag = 'supporting';
     // 添加中间按钮
     addCrawlBtns() {
+        if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type === _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.list.Following) {
+            const button = _Tools__WEBPACK_IMPORTED_MODULE_2__.Tools.addBtn('crawlBtns', _Colors__WEBPACK_IMPORTED_MODULE_1__.Colors.bgGreen);
+            button.textContent = '自動取得の管理';
+            button.addEventListener('click', () => {
+                void this.showAutoManager(button);
+            });
+        }
         if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type === _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.list.Home ||
             _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type === _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.list.Supporting) {
             _Tools__WEBPACK_IMPORTED_MODULE_2__.Tools.addBtn('crawlBtns', _Colors__WEBPACK_IMPORTED_MODULE_1__.Colors.bgBlue, '_抓取赞助的所有用户的投稿').addEventListener('click', () => {
@@ -1475,6 +1495,141 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
             _Tools__WEBPACK_IMPORTED_MODULE_2__.Tools.addBtn('crawlBtns', _Colors__WEBPACK_IMPORTED_MODULE_1__.Colors.bgGreen, '_清空已保存的抓取结果').addEventListener('click', () => {
                 _EVT__WEBPACK_IMPORTED_MODULE_5__.EVT.fire('clearSavedCrawl');
             });
+        }
+    }
+    async showAutoManager(button) {
+        const slot = _Tools__WEBPACK_IMPORTED_MODULE_2__.Tools.findSlot('crawlBtns');
+        const existing = slot.querySelector('.autoCreatorManager');
+        if (existing) {
+            existing.remove();
+            return;
+        }
+        button.disabled = true;
+        try {
+            const data = await _API__WEBPACK_IMPORTED_MODULE_4__.API.request('https://api.fanbox.cc/creator.listFollowing');
+            const stored = await chrome.storage.local.get([
+                _auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoProfilesKey,
+                _auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoPendingKey,
+                _auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoStatusKey,
+            ]);
+            const profiles = (stored[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoProfilesKey] || []);
+            const creators = data.body.creators.map((item) => ({
+                creatorId: item.creatorId,
+                name: item.user.name,
+            }));
+            for (const profile of profiles) {
+                if (!creators.some((item) => item.creatorId === profile.creatorId)) {
+                    creators.push({ creatorId: profile.creatorId, name: profile.name });
+                }
+            }
+            if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type !== _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.list.Following)
+                return;
+            const manager = document.createElement('div');
+            manager.className = 'autoCreatorManager';
+            manager.style.cssText =
+                'width:100%;max-height:420px;overflow:auto;text-align:left;padding:12px;box-sizing:border-box;font-size:14px';
+            const hint = document.createElement('p');
+            hint.textContent =
+                '対象を選び、無料・有料と有料投稿の価格範囲を設定してください。初回登録以前の投稿は自動取得しません。';
+            manager.append(hint);
+            const status = (stored[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoStatusKey] || {});
+            const statusLine = document.createElement('p');
+            const pendingCount = (stored[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoPendingKey] || []).length;
+            statusLine.textContent = `登録: ${profiles.length}人 / 未処理: ${pendingCount}件 / 前回確認: ${status.lastCheckedAt ? new Date(status.lastCheckedAt).toLocaleString() : '未実施'}${status.lastError ? ` / エラー: ${status.lastError}` : ''}`;
+            manager.append(statusLine);
+            const rows = [];
+            for (const creator of creators) {
+                const saved = profiles.find((item) => item.creatorId === creator.creatorId);
+                const row = document.createElement('div');
+                row.style.cssText = 'padding:8px 0;border-bottom:1px solid #777';
+                const title = document.createElement('label');
+                const enabled = document.createElement('input');
+                enabled.type = 'checkbox';
+                enabled.checked = !!saved;
+                title.append(enabled, document.createTextNode(` ${creator.name} (@${creator.creatorId})`));
+                row.append(title, document.createElement('br'));
+                const addCheck = (label, checked) => {
+                    const wrap = document.createElement('label');
+                    const input = document.createElement('input');
+                    input.type = 'checkbox';
+                    input.checked = checked;
+                    wrap.append(input, document.createTextNode(` ${label} `));
+                    row.append(wrap);
+                    return input;
+                };
+                const free = addCheck('無料', saved?.free ?? true);
+                const pay = addCheck('有料', saved?.pay ?? true);
+                const addAmount = (label, value) => {
+                    const wrap = document.createElement('label');
+                    wrap.textContent = `${label} `;
+                    const input = document.createElement('input');
+                    input.type = 'number';
+                    input.min = '0';
+                    input.step = '1';
+                    input.placeholder = '指定なし';
+                    input.value = value === null ? '' : String(value);
+                    input.style.width = '6em';
+                    wrap.append(input);
+                    row.append(wrap);
+                    return input;
+                };
+                const min = addAmount('下限', saved?.minFee ?? null);
+                const max = addAmount('上限', saved?.maxFee ?? null);
+                manager.append(row);
+                rows.push({
+                    creatorId: creator.creatorId,
+                    name: creator.name,
+                    enabled,
+                    free,
+                    pay,
+                    min,
+                    max,
+                });
+            }
+            const save = document.createElement('button');
+            save.type = 'button';
+            save.textContent = '自動取得の設定を保存';
+            save.addEventListener('click', () => {
+                const next = [];
+                for (const row of rows) {
+                    if (!row.enabled.checked)
+                        continue;
+                    const minFee = row.min.value === '' ? null : Number(row.min.value);
+                    const maxFee = row.max.value === '' ? null : Number(row.max.value);
+                    if ((!row.free.checked && !row.pay.checked) ||
+                        (row.pay.checked &&
+                            ((minFee !== null && (!Number.isInteger(minFee) || minFee < 0)) ||
+                                (maxFee !== null &&
+                                    (!Number.isInteger(maxFee) || maxFee < 0)) ||
+                                (minFee !== null && maxFee !== null && minFee > maxFee)))) {
+                        window.alert(`${row.name}: 価格条件を確認してください`);
+                        return;
+                    }
+                    const previous = profiles.find((item) => item.creatorId === row.creatorId);
+                    next.push({
+                        creatorId: row.creatorId,
+                        name: row.name,
+                        free: row.free.checked,
+                        pay: row.pay.checked,
+                        minFee,
+                        maxFee,
+                        since: previous?.since || Date.now(),
+                    });
+                }
+                void chrome.storage.local.set({ [_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoProfilesKey]: next }).then(() => {
+                    void chrome.runtime.sendMessage({ msg: 'auto_check_now' });
+                    window.alert('自動取得の設定を保存しました');
+                });
+            });
+            manager.append(save);
+            if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type === _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.list.Following)
+                slot.append(manager);
+        }
+        catch (error) {
+            window.alert(`フォロー中のクリエイターを取得できませんでした: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        finally {
+            button.disabled = false;
         }
     }
     nextStep() {
@@ -2053,6 +2208,8 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _States__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(/*! ./States */ "./src/ts/States.ts");
 /* harmony import */ var _Log__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(/*! ./Log */ "./src/ts/Log.ts");
 /* harmony import */ var _CrawlInterval__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(/*! ./CrawlInterval */ "./src/ts/CrawlInterval.ts");
+/* harmony import */ var _auto_AutoSession__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(/*! ./auto/AutoSession */ "./src/ts/auto/AutoSession.ts");
+
 
 
 
@@ -2064,6 +2221,8 @@ __webpack_require__.r(__webpack_exports__);
 
 
 class InitPostPage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBase {
+    autoMessageListener;
+    autoEventListeners = [];
     constructor() {
         super();
         this.init();
@@ -2080,9 +2239,64 @@ class InitPostPage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
                 this.readyCrawl();
             }
         });
+        let active = null;
+        const finish = (success) => {
+            if (!active)
+                return;
+            const task = active;
+            active = null;
+            (0,_auto_AutoSession__WEBPACK_IMPORTED_MODULE_10__.setAutoProfile)(null);
+            chrome.runtime.sendMessage({ msg: 'auto_result', ...task, success });
+        };
+        this.autoEventListeners = [
+            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.downloadComplete, () => finish(true)],
+            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.crawlEmpty, () => finish(true)],
+            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.downloadStop, () => finish(false)],
+            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.downloadPause, () => finish(false)],
+        ];
+        for (const [event, listener] of this.autoEventListeners) {
+            window.addEventListener(event, listener);
+        }
+        this.autoMessageListener = (message, _sender, sendResponse) => {
+            if (message.msg !== 'auto_start')
+                return;
+            const postId = _utils_Utils__WEBPACK_IMPORTED_MODULE_5__.Utils.getURLPathField(window.location.pathname, 'posts');
+            if (active || _States__WEBPACK_IMPORTED_MODULE_7__.states.busy || postId !== message.postId) {
+                sendResponse({ accepted: false, error: 'Post is not ready' });
+                return;
+            }
+            const start = () => {
+                active = {
+                    creatorId: message.profile.creatorId,
+                    postId,
+                    startedAt: message.startedAt,
+                };
+                (0,_auto_AutoSession__WEBPACK_IMPORTED_MODULE_10__.setAutoProfile)(message.profile);
+                _States__WEBPACK_IMPORTED_MODULE_7__.states.quickCrawl = true;
+                _EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.fire('quickCrawl');
+                sendResponse({ accepted: true });
+            };
+            if (_States__WEBPACK_IMPORTED_MODULE_7__.states.settingInitialized) {
+                start();
+            }
+            else {
+                window.addEventListener(_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.settingInitialized, start, {
+                    once: true,
+                });
+            }
+            return true;
+        };
+        chrome.runtime.onMessage.addListener(this.autoMessageListener);
     }
     destroy() {
         _Tools__WEBPACK_IMPORTED_MODULE_2__.Tools.clearSlot('crawlBtns');
+        if (this.autoMessageListener) {
+            chrome.runtime.onMessage.removeListener(this.autoMessageListener);
+        }
+        for (const [event, listener] of this.autoEventListeners) {
+            window.removeEventListener(event, listener);
+        }
+        ;(0,_auto_AutoSession__WEBPACK_IMPORTED_MODULE_10__.setAutoProfile)(null);
     }
     nextStep() {
         this.getPostDataThreadNum = 1;
@@ -2100,6 +2314,10 @@ class InitPostPage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
             console.log(error);
             if (error.message) {
                 _Log__WEBPACK_IMPORTED_MODULE_8__.log.error(error.message);
+            }
+            if ((0,_auto_AutoSession__WEBPACK_IMPORTED_MODULE_10__.getAutoProfile)()) {
+                _EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.fire('downloadStop');
+                return;
             }
             _Log__WEBPACK_IMPORTED_MODULE_8__.log.error(_Lang__WEBPACK_IMPORTED_MODULE_0__.lang.transl('_请求失败下载器会重试这个请求'));
             _CrawlInterval__WEBPACK_IMPORTED_MODULE_9__.crawlInterval.addTime('long');
@@ -4702,6 +4920,58 @@ class UnifiedURL {
     }
 }
 new UnifiedURL();
+
+
+/***/ },
+
+/***/ "./src/ts/auto/AutoSession.ts"
+/*!************************************!*\
+  !*** ./src/ts/auto/AutoSession.ts ***!
+  \************************************/
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   getAutoProfile: () => (/* binding */ getAutoProfile),
+/* harmony export */   setAutoProfile: () => (/* binding */ setAutoProfile)
+/* harmony export */ });
+let currentProfile = null;
+function setAutoProfile(profile) {
+    currentProfile = profile;
+}
+function getAutoProfile() {
+    return currentProfile;
+}
+
+
+/***/ },
+
+/***/ "./src/ts/auto/AutoTypes.ts"
+/*!**********************************!*\
+  !*** ./src/ts/auto/AutoTypes.ts ***!
+  \**********************************/
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   autoActiveKey: () => (/* binding */ autoActiveKey),
+/* harmony export */   autoPendingKey: () => (/* binding */ autoPendingKey),
+/* harmony export */   autoProfilesKey: () => (/* binding */ autoProfilesKey),
+/* harmony export */   autoStatusKey: () => (/* binding */ autoStatusKey),
+/* harmony export */   matchesAutoFee: () => (/* binding */ matchesAutoFee)
+/* harmony export */ });
+const autoProfilesKey = 'autoCreatorProfiles';
+const autoPendingKey = 'autoPendingPosts';
+const autoActiveKey = 'autoActivePost';
+const autoStatusKey = 'autoDownloadStatus';
+function matchesAutoFee(profile, fee) {
+    if (fee === 0) {
+        return profile.free;
+    }
+    return (profile.pay &&
+        (profile.minFee === null || fee >= profile.minFee) &&
+        (profile.maxFee === null || fee <= profile.maxFee));
+}
 
 
 /***/ },
