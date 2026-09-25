@@ -1535,25 +1535,39 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
             const status = (stored[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoStatusKey] || {});
             const statusLine = document.createElement('p');
             const pendingCount = (stored[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoPendingKey] || []).length;
-            statusLine.textContent = `登録: ${profiles.length}人 / 未処理: ${pendingCount}件 / 前回確認: ${status.lastCheckedAt ? new Date(status.lastCheckedAt).toLocaleString() : '未実施'}${status.lastError ? ` / エラー: ${status.lastError}` : ''}`;
+            const showStatus = (count) => {
+                statusLine.textContent = `登録: ${count}人 / 未処理: ${pendingCount}件 / 前回確認: ${status.lastCheckedAt ? new Date(status.lastCheckedAt).toLocaleString() : '未実施'}${status.lastError ? ` / エラー: ${status.lastError}` : ''}`;
+            };
+            showStatus(profiles.length);
             manager.append(statusLine);
+            const addCheckbox = (label, checked) => {
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.checked = checked;
+                input.style.cssText =
+                    'display:inline-block;appearance:auto;opacity:1;visibility:visible;position:static;width:16px;height:16px;margin-right:3px;vertical-align:middle;cursor:pointer';
+                const mark = document.createElement('span');
+                const updateMark = () => {
+                    mark.textContent = input.checked ? '☑ ' : '☐ ';
+                };
+                input.addEventListener('change', updateMark);
+                updateMark();
+                label.append(input, mark);
+                return input;
+            };
             const rows = [];
             for (const creator of creators) {
                 const saved = profiles.find((item) => item.creatorId === creator.creatorId);
                 const row = document.createElement('div');
                 row.style.cssText = 'padding:8px 0;border-bottom:1px solid #777';
                 const title = document.createElement('label');
-                const enabled = document.createElement('input');
-                enabled.type = 'checkbox';
-                enabled.checked = !!saved;
-                title.append(enabled, document.createTextNode(` ${creator.name} (@${creator.creatorId})`));
+                const enabled = addCheckbox(title, !!saved);
+                title.append(document.createTextNode(` ${creator.name} (@${creator.creatorId})`));
                 row.append(title, document.createElement('br'));
                 const addCheck = (label, checked) => {
                     const wrap = document.createElement('label');
-                    const input = document.createElement('input');
-                    input.type = 'checkbox';
-                    input.checked = checked;
-                    wrap.append(input, document.createTextNode(` ${label} `));
+                    const input = addCheckbox(wrap, checked);
+                    wrap.append(document.createTextNode(` ${label} `));
                     row.append(wrap);
                     return input;
                 };
@@ -1616,9 +1630,20 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
                         since: previous?.since || Date.now(),
                     });
                 }
-                void chrome.storage.local.set({ [_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoProfilesKey]: next }).then(() => {
+                save.disabled = true;
+                void chrome.storage.local
+                    .set({ [_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoProfilesKey]: next })
+                    .then(() => {
+                    profiles.splice(0, profiles.length, ...next);
+                    showStatus(next.length);
                     void chrome.runtime.sendMessage({ msg: 'auto_check_now' });
                     window.alert('自動取得の設定を保存しました');
+                })
+                    .catch((error) => {
+                    window.alert(`保存できませんでした: ${error instanceof Error ? error.message : String(error)}`);
+                })
+                    .finally(() => {
+                    save.disabled = false;
                 });
             });
             manager.append(save);

@@ -132,8 +132,27 @@ class InitHomePage extends InitPageBase {
       const status = (stored[autoStatusKey] || {}) as AutoStatus
       const statusLine = document.createElement('p')
       const pendingCount = ((stored[autoPendingKey] || []) as unknown[]).length
-      statusLine.textContent = `登録: ${profiles.length}人 / 未処理: ${pendingCount}件 / 前回確認: ${status.lastCheckedAt ? new Date(status.lastCheckedAt).toLocaleString() : '未実施'}${status.lastError ? ` / エラー: ${status.lastError}` : ''}`
+      const showStatus = (count: number) => {
+        statusLine.textContent = `登録: ${count}人 / 未処理: ${pendingCount}件 / 前回確認: ${status.lastCheckedAt ? new Date(status.lastCheckedAt).toLocaleString() : '未実施'}${status.lastError ? ` / エラー: ${status.lastError}` : ''}`
+      }
+      showStatus(profiles.length)
       manager.append(statusLine)
+
+      const addCheckbox = (label: HTMLLabelElement, checked: boolean) => {
+        const input = document.createElement('input')
+        input.type = 'checkbox'
+        input.checked = checked
+        input.style.cssText =
+          'display:inline-block;appearance:auto;opacity:1;visibility:visible;position:static;width:16px;height:16px;margin-right:3px;vertical-align:middle;cursor:pointer'
+        const mark = document.createElement('span')
+        const updateMark = () => {
+          mark.textContent = input.checked ? '☑ ' : '☐ '
+        }
+        input.addEventListener('change', updateMark)
+        updateMark()
+        label.append(input, mark)
+        return input
+      }
 
       const rows: {
         creatorId: string
@@ -151,21 +170,16 @@ class InitHomePage extends InitPageBase {
         const row = document.createElement('div')
         row.style.cssText = 'padding:8px 0;border-bottom:1px solid #777'
         const title = document.createElement('label')
-        const enabled = document.createElement('input')
-        enabled.type = 'checkbox'
-        enabled.checked = !!saved
+        const enabled = addCheckbox(title, !!saved)
         title.append(
-          enabled,
           document.createTextNode(` ${creator.name} (@${creator.creatorId})`),
         )
         row.append(title, document.createElement('br'))
 
         const addCheck = (label: string, checked: boolean) => {
           const wrap = document.createElement('label')
-          const input = document.createElement('input')
-          input.type = 'checkbox'
-          input.checked = checked
-          wrap.append(input, document.createTextNode(` ${label} `))
+          const input = addCheckbox(wrap, checked)
+          wrap.append(document.createTextNode(` ${label} `))
           row.append(wrap)
           return input
         }
@@ -232,10 +246,21 @@ class InitHomePage extends InitPageBase {
             since: previous?.since || Date.now(),
           })
         }
-        void chrome.storage.local.set({ [autoProfilesKey]: next }).then(() => {
-          void chrome.runtime.sendMessage({ msg: 'auto_check_now' })
-          window.alert('自動取得の設定を保存しました')
-        })
+        save.disabled = true
+        void chrome.storage.local
+          .set({ [autoProfilesKey]: next })
+          .then(() => {
+            profiles.splice(0, profiles.length, ...next)
+            showStatus(next.length)
+            void chrome.runtime.sendMessage({ msg: 'auto_check_now' })
+            window.alert('自動取得の設定を保存しました')
+          })
+          .catch((error) => {
+            window.alert(`保存できませんでした: ${error instanceof Error ? error.message : String(error)}`)
+          })
+          .finally(() => {
+            save.disabled = false
+          })
       })
       manager.append(save)
       if (pageType.type === pageType.list.Following) slot.append(manager)
