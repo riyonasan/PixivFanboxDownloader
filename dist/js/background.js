@@ -170,8 +170,20 @@ class Eagle {
         const items = await this.listFolderItems(folderId);
         return items.some((item) => !item.isDeleted &&
             item.folders.includes(folderId) &&
-            item.name === name &&
+            this.sameItemName(item.name, name) &&
             item.ext.toLowerCase() === extension.toLowerCase());
+    }
+    sameItemName(actual, expected) {
+        if (actual === expected) {
+            return true;
+        }
+        const actualIndex = /^(.*-)(\d+)$/.exec(actual);
+        const expectedIndex = /^(.*-)(\d+)$/.exec(expected);
+        return !!(actualIndex &&
+            expectedIndex &&
+            actualIndex[1] === expectedIndex[1] &&
+            actualIndex[2].replace(/^0+(?=\d)/, '') ===
+                expectedIndex[2].replace(/^0+(?=\d)/, ''));
     }
     listFolderItems(folderId) {
         let itemsPromise = this.folderItemsCache.get(folderId);
