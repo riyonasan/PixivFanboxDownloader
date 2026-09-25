@@ -1452,6 +1452,34 @@ __webpack_require__.r(__webpack_exports__);
 
 
 
+function getSupportingCreators(body) {
+    const root = body;
+    const entries = Array.isArray(body)
+        ? body
+        : Array.isArray(root?.supportingPlans)
+            ? root.supportingPlans
+            : Array.isArray(root?.plans)
+                ? root.plans
+                : null;
+    if (!entries)
+        throw new Error('支援中の一覧の形式を読み取れませんでした');
+    const creators = [];
+    for (const entry of entries) {
+        const plans = Array.isArray(entry?.plans) ? entry.plans : [entry];
+        for (const plan of plans) {
+            if (typeof plan?.creatorId !== 'string')
+                continue;
+            creators.push({
+                creatorId: plan.creatorId,
+                name: plan.user?.name || entry?.user?.name || plan.creatorId,
+            });
+        }
+    }
+    if (entries.length > 0 && creators.length === 0) {
+        throw new Error('支援中のクリエイター情報を読み取れませんでした');
+    }
+    return creators;
+}
 class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBase {
     constructor() {
         super();
@@ -1514,10 +1542,7 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
                     creatorId: item.creatorId,
                     name: item.user.name,
                 }))
-                : (await _API__WEBPACK_IMPORTED_MODULE_4__.API.getAllSupportingPlan()).body.map((item) => ({
-                    creatorId: item.creatorId,
-                    name: item.user.name,
-                }));
+                : getSupportingCreators((await _API__WEBPACK_IMPORTED_MODULE_4__.API.getAllSupportingPlan()).body);
             const stored = await chrome.storage.local.get([
                 _auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoProfilesKey,
                 _auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoPendingKey,
