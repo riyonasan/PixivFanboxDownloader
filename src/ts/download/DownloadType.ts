@@ -17,6 +17,7 @@ export interface SendToBackEndData {
   fileName: string
   id: string
   taskBatch: number
+  recordKey?: string
   website?: string
   error?: string
   conflictAction?: 'uniquify' | 'overwrite' | 'prompt'
@@ -30,6 +31,7 @@ export interface DonwloadSuccessData {
   uuid: boolean
   size: number
   source?: 'eagle'
+  recordKey?: string
 }
 
 export interface DonwloadSkipData {

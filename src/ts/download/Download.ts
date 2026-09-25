@@ -67,8 +67,11 @@ class Download {
 
     // 检查是否是重复文件
     const url = arg.data.url
-    if (!this.arg.saveToEagle && !url.startsWith('blob')) {
-      const duplicate = await downloadRecord.checkDeduplication(arg.data)
+    if (this.arg.saveToEagle || !url.startsWith('blob')) {
+      const duplicate = await downloadRecord.checkDeduplication(
+        arg.data,
+        this.arg.saveToEagle,
+      )
       if (duplicate) {
         return this.skipDownload(
           {
@@ -149,6 +152,7 @@ class Download {
       fileName,
       id,
       taskBatch,
+      recordKey: downloadRecord.getEagleRecordKey(this.arg.data),
       website: `https://www.fanbox.cc/@${encodeURIComponent(
         this.arg.data.createID,
       )}/posts/${encodeURIComponent(this.arg.data.postId)}`,

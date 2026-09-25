@@ -59,6 +59,7 @@ chrome.runtime.onMessage.addListener(async function (
       uuid: false,
       size: -1,
       source: 'eagle',
+      recordKey: msg.recordKey,
     }
 
     if (msg.msg === 'eagle_error') {

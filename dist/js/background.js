@@ -415,6 +415,7 @@ chrome.runtime.onMessage.addListener(async function (msg, sender) {
             uuid: false,
             size: -1,
             source: 'eagle',
+            recordKey: msg.recordKey,
         };
         if (msg.msg === 'eagle_error') {
             chrome.tabs.sendMessage(tabId, {

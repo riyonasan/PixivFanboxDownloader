@@ -116,6 +116,15 @@ class DownloadRecord {
     })
   }
 
+  // Eagle の記録は通常ダウンロードと区別する。本文の Blob URL は毎回変わるため投稿 ID を使う。
+  public getEagleRecordKey(result: Result) {
+    return `eagle:${result.postId}:${'text' in result ? 'text' : result.fileID}`
+  }
+
+  public async recordEagleSuccess(key: string) {
+    await this.IDB.put(this.storeName, { url: key })
+  }
+
   // 添加一条下载记录
   private async addRecord(record: Record) {
     this.IDB.put(this.storeName, record)
@@ -125,17 +134,17 @@ class DownloadRecord {
    *
    * 返回值 true 表示重复，false 表示不重复
    */
-  public async checkDeduplication(result: Result) {
+  public async checkDeduplication(result: Result, saveToEagle = false) {
     return new Promise<boolean>(async (resolve, reject) => {
       // 如果未启用去重，直接返回不重复
       if (!settings.deduplication) {
         return resolve(false)
       }
       // 在数据库进行查找
-      const data = (await this.IDB.get(
-        this.storeName,
-        this.removeHttp(result.url),
-      )) as Record | null
+      const key = saveToEagle
+        ? this.getEagleRecordKey(result)
+        : this.removeHttp(result.url)
+      const data = (await this.IDB.get(this.storeName, key)) as Record | null
       return resolve(!!data)
     })
   }

@@ -17,6 +17,7 @@ import { states } from '../States'
 import { ShowSkipCount } from './ShowSkipCount'
 import { msgBox } from '../MsgBox'
 import { downloadStates } from './DownloadStates'
+import { downloadRecord } from './DownloadRecord'
 import { toast } from '../Toast'
 import { Config } from '../Config'
 import { getTotalDownload } from './GetTotalDownload'
@@ -113,6 +114,10 @@ class DownloadControl {
 
       // 文件下载成功
       if (msg.msg === 'downloaded') {
+        if (msg.data.source === 'eagle') {
+          void this.recordEagleSuccess(msg.data)
+          return
+        }
         EVT.fire('downloadSuccess', msg.data)
 
         this.downloadSuccess(msg.data)
@@ -170,6 +175,26 @@ class DownloadControl {
         position: 'topCenter',
       })
     })
+  }
+
+  private async recordEagleSuccess(data: DonwloadSuccessData) {
+    try {
+      if (!data.recordKey) {
+        throw new Error('Eagle history key is missing')
+      }
+      await downloadRecord.recordEagleSuccess(data.recordKey)
+      EVT.fire('downloadSuccess', data)
+      this.downloadSuccess(data)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      log.error(`Unable to save Eagle history: ${message}`)
+      msgBox.once(
+        'eagleError',
+        `Unable to save Eagle history: ${Tools.escapeHtml(message)}`,
+        'error',
+      )
+      this.stopDownload()
+    }
   }
 
   private setDownloaded() {

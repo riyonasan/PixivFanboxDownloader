@@ -5207,8 +5207,8 @@ class Download {
         this.fileName = _FileName__WEBPACK_IMPORTED_MODULE_1__.fileName.getFileName(arg.data);
         // 检查是否是重复文件
         const url = arg.data.url;
-        if (!this.arg.saveToEagle && !url.startsWith('blob')) {
-            const duplicate = await _DownloadRecord__WEBPACK_IMPORTED_MODULE_3__.downloadRecord.checkDeduplication(arg.data);
+        if (this.arg.saveToEagle || !url.startsWith('blob')) {
+            const duplicate = await _DownloadRecord__WEBPACK_IMPORTED_MODULE_3__.downloadRecord.checkDeduplication(arg.data, this.arg.saveToEagle);
             if (duplicate) {
                 return this.skipDownload({
                     id: arg.id,
@@ -5269,6 +5269,7 @@ class Download {
             fileName,
             id,
             taskBatch,
+            recordKey: _DownloadRecord__WEBPACK_IMPORTED_MODULE_3__.downloadRecord.getEagleRecordKey(this.arg.data),
             website: `https://www.fanbox.cc/@${encodeURIComponent(this.arg.data.createID)}/posts/${encodeURIComponent(this.arg.data.postId)}`,
         };
         chrome.runtime.sendMessage(sendData);
@@ -5310,11 +5311,13 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _ShowSkipCount__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(/*! ./ShowSkipCount */ "./src/ts/download/ShowSkipCount.ts");
 /* harmony import */ var _MsgBox__WEBPACK_IMPORTED_MODULE_11__ = __webpack_require__(/*! ../MsgBox */ "./src/ts/MsgBox.ts");
 /* harmony import */ var _DownloadStates__WEBPACK_IMPORTED_MODULE_12__ = __webpack_require__(/*! ./DownloadStates */ "./src/ts/download/DownloadStates.ts");
-/* harmony import */ var _Toast__WEBPACK_IMPORTED_MODULE_13__ = __webpack_require__(/*! ../Toast */ "./src/ts/Toast.ts");
-/* harmony import */ var _Config__WEBPACK_IMPORTED_MODULE_14__ = __webpack_require__(/*! ../Config */ "./src/ts/Config.ts");
-/* harmony import */ var _GetTotalDownload__WEBPACK_IMPORTED_MODULE_15__ = __webpack_require__(/*! ./GetTotalDownload */ "./src/ts/download/GetTotalDownload.ts");
-/* harmony import */ var _CreateHtmlDocument__WEBPACK_IMPORTED_MODULE_16__ = __webpack_require__(/*! ./CreateHtmlDocument */ "./src/ts/download/CreateHtmlDocument.ts");
+/* harmony import */ var _DownloadRecord__WEBPACK_IMPORTED_MODULE_13__ = __webpack_require__(/*! ./DownloadRecord */ "./src/ts/download/DownloadRecord.ts");
+/* harmony import */ var _Toast__WEBPACK_IMPORTED_MODULE_14__ = __webpack_require__(/*! ../Toast */ "./src/ts/Toast.ts");
+/* harmony import */ var _Config__WEBPACK_IMPORTED_MODULE_15__ = __webpack_require__(/*! ../Config */ "./src/ts/Config.ts");
+/* harmony import */ var _GetTotalDownload__WEBPACK_IMPORTED_MODULE_16__ = __webpack_require__(/*! ./GetTotalDownload */ "./src/ts/download/GetTotalDownload.ts");
+/* harmony import */ var _CreateHtmlDocument__WEBPACK_IMPORTED_MODULE_17__ = __webpack_require__(/*! ./CreateHtmlDocument */ "./src/ts/download/CreateHtmlDocument.ts");
 // 下载控制
+
 
 
 
@@ -5390,6 +5393,10 @@ class DownloadControl {
             }
             // 文件下载成功
             if (msg.msg === 'downloaded') {
+                if (msg.data.source === 'eagle') {
+                    void this.recordEagleSuccess(msg.data);
+                    return;
+                }
                 _EVT__WEBPACK_IMPORTED_MODULE_0__.EVT.fire('downloadSuccess', msg.data);
                 this.downloadSuccess(msg.data);
             }
@@ -5430,10 +5437,26 @@ class DownloadControl {
                 : _Lang__WEBPACK_IMPORTED_MODULE_4__.lang.transl('_下载完毕');
             this.setDownStateText(completeText, _Colors__WEBPACK_IMPORTED_MODULE_5__.Colors.textSuccess);
             _Log__WEBPACK_IMPORTED_MODULE_3__.log.success(completeLog, 2);
-            _Toast__WEBPACK_IMPORTED_MODULE_13__.toast.success(completeText, {
+            _Toast__WEBPACK_IMPORTED_MODULE_14__.toast.success(completeText, {
                 position: 'topCenter',
             });
         });
+    }
+    async recordEagleSuccess(data) {
+        try {
+            if (!data.recordKey) {
+                throw new Error('Eagle history key is missing');
+            }
+            await _DownloadRecord__WEBPACK_IMPORTED_MODULE_13__.downloadRecord.recordEagleSuccess(data.recordKey);
+            _EVT__WEBPACK_IMPORTED_MODULE_0__.EVT.fire('downloadSuccess', data);
+            this.downloadSuccess(data);
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            _Log__WEBPACK_IMPORTED_MODULE_3__.log.error(`Unable to save Eagle history: ${message}`);
+            _MsgBox__WEBPACK_IMPORTED_MODULE_11__.msgBox.once('eagleError', `Unable to save Eagle history: ${_Tools__WEBPACK_IMPORTED_MODULE_1__.Tools.escapeHtml(message)}`, 'error');
+            this.stopDownload();
+        }
     }
     setDownloaded() {
         this.downloaded = _DownloadStates__WEBPACK_IMPORTED_MODULE_12__.downloadStates.downloadedCount();
@@ -5514,10 +5537,10 @@ class DownloadControl {
     setDownloadThread() {
         const setThread = _setting_Settings__WEBPACK_IMPORTED_MODULE_8__.settings.downloadThread;
         if (setThread < 1 ||
-            setThread > _Config__WEBPACK_IMPORTED_MODULE_14__.Config.downloadThreadMax ||
+            setThread > _Config__WEBPACK_IMPORTED_MODULE_15__.Config.downloadThreadMax ||
             isNaN(setThread)) {
             // 如果数值非法，则重设为默认值
-            this.downloadThread = _Config__WEBPACK_IMPORTED_MODULE_14__.Config.downloadThreadMax;
+            this.downloadThread = _Config__WEBPACK_IMPORTED_MODULE_15__.Config.downloadThreadMax;
         }
         else {
             this.downloadThread = setThread; // 设置为用户输入的值
@@ -5573,7 +5596,7 @@ class DownloadControl {
         }
         this.setDownStateText(_Lang__WEBPACK_IMPORTED_MODULE_4__.lang.transl('_正在下载中'));
         _Log__WEBPACK_IMPORTED_MODULE_3__.log.log(_Lang__WEBPACK_IMPORTED_MODULE_4__.lang.transl('_正在下载中'));
-        if (_Config__WEBPACK_IMPORTED_MODULE_14__.Config.mobile) {
+        if (_Config__WEBPACK_IMPORTED_MODULE_15__.Config.mobile) {
             _Log__WEBPACK_IMPORTED_MODULE_3__.log.warning(_Lang__WEBPACK_IMPORTED_MODULE_4__.lang.transl('_移动端浏览器可能不会建立文件夹的说明'));
         }
     }
@@ -5633,7 +5656,7 @@ class DownloadControl {
         // 是否继续下载
         // 检查下载总体积限制
         if (_setting_Settings__WEBPACK_IMPORTED_MODULE_8__.settings.totalDownloadLimitSwitch) {
-            const total = await _GetTotalDownload__WEBPACK_IMPORTED_MODULE_15__.getTotalDownload.getToday();
+            const total = await _GetTotalDownload__WEBPACK_IMPORTED_MODULE_16__.getTotalDownload.getToday();
             if (total > _setting_Settings__WEBPACK_IMPORTED_MODULE_8__.settings.totalDownloadLimitByte) {
                 this.pauseDownload();
                 const msg = _Lang__WEBPACK_IMPORTED_MODULE_4__.lang.transl('_下载已暂停原因') +
@@ -5710,7 +5733,7 @@ class DownloadControl {
                             textContent: result,
                         };
                         result.text = [
-                            await _CreateHtmlDocument__WEBPACK_IMPORTED_MODULE_16__.createHtmlDocument.create(result.htmlData, resultMeta, saveToEagle),
+                            await _CreateHtmlDocument__WEBPACK_IMPORTED_MODULE_17__.createHtmlDocument.create(result.htmlData, resultMeta, saveToEagle),
                         ];
                         result.ext = 'html';
                     }
@@ -5978,6 +6001,13 @@ class DownloadRecord {
             this.clearRecords();
         });
     }
+    // Eagle の記録は通常ダウンロードと区別する。本文の Blob URL は毎回変わるため投稿 ID を使う。
+    getEagleRecordKey(result) {
+        return `eagle:${result.postId}:${'text' in result ? 'text' : result.fileID}`;
+    }
+    async recordEagleSuccess(key) {
+        await this.IDB.put(this.storeName, { url: key });
+    }
     // 添加一条下载记录
     async addRecord(record) {
         this.IDB.put(this.storeName, record);
@@ -5986,14 +6016,17 @@ class DownloadRecord {
      *
      * 返回值 true 表示重复，false 表示不重复
      */
-    async checkDeduplication(result) {
+    async checkDeduplication(result, saveToEagle = false) {
         return new Promise(async (resolve, reject) => {
             // 如果未启用去重，直接返回不重复
             if (!_setting_Settings__WEBPACK_IMPORTED_MODULE_3__.settings.deduplication) {
                 return resolve(false);
             }
             // 在数据库进行查找
-            const data = (await this.IDB.get(this.storeName, this.removeHttp(result.url)));
+            const key = saveToEagle
+                ? this.getEagleRecordKey(result)
+                : this.removeHttp(result.url);
+            const data = (await this.IDB.get(this.storeName, key));
             return resolve(!!data);
         });
     }
