@@ -1460,7 +1460,8 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
     crawlFlag = 'supporting';
     // 添加中间按钮
     addCrawlBtns() {
-        if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type === _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.list.Following) {
+        if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type === _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.list.Following ||
+            _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type === _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.list.Supporting) {
             const button = _Tools__WEBPACK_IMPORTED_MODULE_2__.Tools.addBtn('crawlBtns', _Colors__WEBPACK_IMPORTED_MODULE_1__.Colors.bgGreen);
             button.textContent = '自動取得の管理';
             button.addEventListener('click', () => {
@@ -1498,6 +1499,7 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
         }
     }
     async showAutoManager(button) {
+        const currentPage = _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type;
         const slot = _Tools__WEBPACK_IMPORTED_MODULE_2__.Tools.findSlot('crawlBtns');
         const existing = slot.querySelector('.autoCreatorManager');
         if (existing) {
@@ -1506,23 +1508,29 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
         }
         button.disabled = true;
         try {
-            const data = await _API__WEBPACK_IMPORTED_MODULE_4__.API.request('https://api.fanbox.cc/creator.listFollowing');
+            const creators = currentPage === _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.list.Following
+                ? (await _API__WEBPACK_IMPORTED_MODULE_4__.API.request('https://api.fanbox.cc/creator.listFollowing'))
+                    .body.creators.map((item) => ({
+                    creatorId: item.creatorId,
+                    name: item.user.name,
+                }))
+                : (await _API__WEBPACK_IMPORTED_MODULE_4__.API.getAllSupportingPlan()).body.map((item) => ({
+                    creatorId: item.creatorId,
+                    name: item.user.name,
+                }));
             const stored = await chrome.storage.local.get([
                 _auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoProfilesKey,
                 _auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoPendingKey,
                 _auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoStatusKey,
             ]);
             const profiles = (stored[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoProfilesKey] || []);
-            const creators = data.body.creators.map((item) => ({
-                creatorId: item.creatorId,
-                name: item.user.name,
-            }));
+            const uniqueCreators = Array.from(new Map(creators.map((item) => [item.creatorId, item])).values());
             for (const profile of profiles) {
-                if (!creators.some((item) => item.creatorId === profile.creatorId)) {
-                    creators.push({ creatorId: profile.creatorId, name: profile.name });
+                if (!uniqueCreators.some((item) => item.creatorId === profile.creatorId)) {
+                    uniqueCreators.push({ creatorId: profile.creatorId, name: profile.name });
                 }
             }
-            if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type !== _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.list.Following)
+            if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type !== currentPage)
                 return;
             const manager = document.createElement('div');
             manager.className = 'autoCreatorManager';
@@ -1556,7 +1564,7 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
                 return input;
             };
             const rows = [];
-            for (const creator of creators) {
+            for (const creator of uniqueCreators) {
                 const saved = profiles.find((item) => item.creatorId === creator.creatorId);
                 const row = document.createElement('div');
                 row.style.cssText = 'padding:8px 0;border-bottom:1px solid #777';
@@ -1647,11 +1655,11 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
                 });
             });
             manager.append(save);
-            if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type === _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.list.Following)
+            if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type === currentPage)
                 slot.append(manager);
         }
         catch (error) {
-            window.alert(`フォロー中のクリエイターを取得できませんでした: ${error instanceof Error ? error.message : String(error)}`);
+            window.alert(`クリエイターを取得できませんでした: ${error instanceof Error ? error.message : String(error)}`);
         }
         finally {
             button.disabled = false;

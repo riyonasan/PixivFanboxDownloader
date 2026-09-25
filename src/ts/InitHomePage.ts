@@ -2,7 +2,11 @@ import { lang } from './Lang'
 import { Colors } from './Colors'
 import { Tools } from './Tools'
 import { InitPageBase } from './InitPageBase'
-import { ListFollowing, SupportPostList } from './CrawlResult.d'
+import {
+  AllSupportingPlan,
+  ListFollowing,
+  SupportPostList,
+} from './CrawlResult.d'
 import { API } from './API'
 import { EVT } from './EVT'
 import { log } from './Log'
@@ -26,7 +30,10 @@ class InitHomePage extends InitPageBase {
 
   // 添加中间按钮
   protected addCrawlBtns() {
-    if (pageType.type === pageType.list.Following) {
+    if (
+      pageType.type === pageType.list.Following ||
+      pageType.type === pageType.list.Supporting
+    ) {
       const button = Tools.addBtn('crawlBtns', Colors.bgGreen)
       button.textContent = '自動取得の管理'
       button.addEventListener('click', () => {
@@ -92,6 +99,7 @@ class InitHomePage extends InitPageBase {
   }
 
   private async showAutoManager(button: HTMLButtonElement) {
+    const currentPage = pageType.type
     const slot = Tools.findSlot('crawlBtns')
     const existing = slot.querySelector('.autoCreatorManager')
     if (existing) {
@@ -101,25 +109,33 @@ class InitHomePage extends InitPageBase {
 
     button.disabled = true
     try {
-      const data: ListFollowing = await API.request(
-        'https://api.fanbox.cc/creator.listFollowing',
-      )
+      const creators = currentPage === pageType.list.Following
+        ? ((await API.request('https://api.fanbox.cc/creator.listFollowing')) as ListFollowing)
+            .body.creators.map((item) => ({
+              creatorId: item.creatorId,
+              name: item.user.name,
+            }))
+        : ((await API.getAllSupportingPlan()) as AllSupportingPlan).body.map(
+            (item) => ({
+              creatorId: item.creatorId,
+              name: item.user.name,
+            }),
+          )
       const stored = await chrome.storage.local.get([
         autoProfilesKey,
         autoPendingKey,
         autoStatusKey,
       ])
       const profiles = (stored[autoProfilesKey] || []) as AutoCreatorProfile[]
-      const creators = data.body.creators.map((item) => ({
-        creatorId: item.creatorId,
-        name: item.user.name,
-      }))
+      const uniqueCreators = Array.from(
+        new Map(creators.map((item) => [item.creatorId, item])).values(),
+      )
       for (const profile of profiles) {
-        if (!creators.some((item) => item.creatorId === profile.creatorId)) {
-          creators.push({ creatorId: profile.creatorId, name: profile.name })
+        if (!uniqueCreators.some((item) => item.creatorId === profile.creatorId)) {
+          uniqueCreators.push({ creatorId: profile.creatorId, name: profile.name })
         }
       }
-      if (pageType.type !== pageType.list.Following) return
+      if (pageType.type !== currentPage) return
 
       const manager = document.createElement('div')
       manager.className = 'autoCreatorManager'
@@ -163,7 +179,7 @@ class InitHomePage extends InitPageBase {
         min: HTMLInputElement
         max: HTMLInputElement
       }[] = []
-      for (const creator of creators) {
+      for (const creator of uniqueCreators) {
         const saved = profiles.find(
           (item) => item.creatorId === creator.creatorId,
         )
@@ -263,10 +279,10 @@ class InitHomePage extends InitPageBase {
           })
       })
       manager.append(save)
-      if (pageType.type === pageType.list.Following) slot.append(manager)
+      if (pageType.type === currentPage) slot.append(manager)
     } catch (error) {
       window.alert(
-        `フォロー中のクリエイターを取得できませんでした: ${error instanceof Error ? error.message : String(error)}`,
+        `クリエイターを取得できませんでした: ${error instanceof Error ? error.message : String(error)}`,
       )
     } finally {
       button.disabled = false
