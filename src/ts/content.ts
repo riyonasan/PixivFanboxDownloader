@@ -10,6 +10,7 @@
  */
 
 import './UnifiedURL'
+import './auto/AutoScanner'
 import './ListenPageSwitch'
 import './PageType'
 import './CenterPanel'

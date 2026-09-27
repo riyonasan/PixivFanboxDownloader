@@ -2364,8 +2364,12 @@ class InitPostPage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
         await _CrawlInterval__WEBPACK_IMPORTED_MODULE_9__.crawlInterval.wait();
         try {
             const data = await _API__WEBPACK_IMPORTED_MODULE_4__.API.getPost(_utils_Utils__WEBPACK_IMPORTED_MODULE_5__.Utils.getURLPathField(window.location.pathname, 'posts'));
+            const post = data.body.post || data.body;
+            if ((0,_auto_AutoSession__WEBPACK_IMPORTED_MODULE_10__.getAutoProfile)() && post.body === null) {
+                throw new Error('この投稿の本文にアクセスできません');
+            }
             _CrawlInterval__WEBPACK_IMPORTED_MODULE_9__.crawlInterval.addTime();
-            await this.fetchAllComments(data.body.post || data.body);
+            await this.fetchAllComments(post);
             this.afterFetchPost(data);
         }
         catch (error) {
@@ -4978,6 +4982,79 @@ class UnifiedURL {
     }
 }
 new UnifiedURL();
+
+
+/***/ },
+
+/***/ "./src/ts/auto/AutoScanner.ts"
+/*!************************************!*\
+  !*** ./src/ts/auto/AutoScanner.ts ***!
+  \************************************/
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony import */ var _API__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ../API */ "./src/ts/API.ts");
+/* harmony import */ var _AutoTypes__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ./AutoTypes */ "./src/ts/auto/AutoTypes.ts");
+
+
+async function findNewPosts(profile, until, delayMs) {
+    const pages = await _API__WEBPACK_IMPORTED_MODULE_0__.API.request(`https://api.fanbox.cc/post.paginateCreator?creatorId=${encodeURIComponent(profile.creatorId)}`);
+    if (!Array.isArray(pages.body?.pageUrls)) {
+        throw new Error('FANBOX returned an unexpected page list');
+    }
+    const result = [];
+    const pageURLs = pages.body.pageUrls.filter((_, index) => index % 30 === 0);
+    for (const pageURL of pageURLs) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        const url = new URL(pageURL);
+        if (url.origin !== 'https://api.fanbox.cc') {
+            throw new Error('FANBOX returned an unexpected page URL');
+        }
+        url.searchParams.set('limit', '300');
+        const data = await _API__WEBPACK_IMPORTED_MODULE_0__.API.request(url.href);
+        const posts = data.body?.posts;
+        if (!Array.isArray(posts)) {
+            throw new Error('FANBOX returned an unexpected post list');
+        }
+        for (const post of posts) {
+            const published = Date.parse(post.publishedDatetime);
+            if (!Number.isFinite(published)) {
+                throw new Error('FANBOX returned an invalid post date');
+            }
+            if (published > profile.since &&
+                published <= until &&
+                (0,_AutoTypes__WEBPACK_IMPORTED_MODULE_1__.matchesAutoFee)(profile, post.feeRequired)) {
+                result.push({
+                    creatorId: profile.creatorId,
+                    postId: post.id,
+                    fee: post.feeRequired,
+                });
+            }
+        }
+        if (posts.length > 0 &&
+            posts.every((post) => Date.parse(post.publishedDatetime) <= profile.since)) {
+            break;
+        }
+    }
+    return result;
+}
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.msg !== 'auto_scan')
+        return;
+    if (!message.profile ||
+        typeof message.profile.creatorId !== 'string' ||
+        typeof message.profile.since !== 'number' ||
+        typeof message.until !== 'number') {
+        sendResponse({ error: 'Invalid automatic scan request' });
+        return;
+    }
+    void findNewPosts(message.profile, message.until, message.delayMs)
+        .then((posts) => sendResponse({ posts }))
+        .catch((error) => sendResponse({
+        error: error instanceof Error ? error.message : String(error),
+    }));
+    return true;
+});
 
 
 /***/ },
@@ -11326,22 +11403,23 @@ let __webpack_exports__ = {};
   \***************************/
 __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _UnifiedURL__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ./UnifiedURL */ "./src/ts/UnifiedURL.ts");
-/* harmony import */ var _ListenPageSwitch__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ./ListenPageSwitch */ "./src/ts/ListenPageSwitch.ts");
-/* harmony import */ var _PageType__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ./PageType */ "./src/ts/PageType.ts");
-/* harmony import */ var _CenterPanel__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! ./CenterPanel */ "./src/ts/CenterPanel.ts");
-/* harmony import */ var _setting_Form__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! ./setting/Form */ "./src/ts/setting/Form.ts");
-/* harmony import */ var _InitPage__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(/*! ./InitPage */ "./src/ts/InitPage.ts");
-/* harmony import */ var _QuickCrawl__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(/*! ./QuickCrawl */ "./src/ts/QuickCrawl.ts");
-/* harmony import */ var _Tip__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(/*! ./Tip */ "./src/ts/Tip.ts");
-/* harmony import */ var _Tip__WEBPACK_IMPORTED_MODULE_7___default = /*#__PURE__*/__webpack_require__.n(_Tip__WEBPACK_IMPORTED_MODULE_7__);
-/* harmony import */ var _OutputPanel__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(/*! ./OutputPanel */ "./src/ts/OutputPanel.ts");
-/* harmony import */ var _download_DownloadControl__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(/*! ./download/DownloadControl */ "./src/ts/download/DownloadControl.ts");
-/* harmony import */ var _download_ShowStatusOnTitle__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(/*! ./download/ShowStatusOnTitle */ "./src/ts/download/ShowStatusOnTitle.ts");
-/* harmony import */ var _download_Resume__WEBPACK_IMPORTED_MODULE_11__ = __webpack_require__(/*! ./download/Resume */ "./src/ts/download/Resume.ts");
-/* harmony import */ var _ShowNotification__WEBPACK_IMPORTED_MODULE_12__ = __webpack_require__(/*! ./ShowNotification */ "./src/ts/ShowNotification.ts");
-/* harmony import */ var _ShowHowToUse__WEBPACK_IMPORTED_MODULE_13__ = __webpack_require__(/*! ./ShowHowToUse */ "./src/ts/ShowHowToUse.ts");
-/* harmony import */ var _ShowWhatIsNew__WEBPACK_IMPORTED_MODULE_14__ = __webpack_require__(/*! ./ShowWhatIsNew */ "./src/ts/ShowWhatIsNew.ts");
-/* harmony import */ var _CheckUnsupportBrowser__WEBPACK_IMPORTED_MODULE_15__ = __webpack_require__(/*! ./CheckUnsupportBrowser */ "./src/ts/CheckUnsupportBrowser.ts");
+/* harmony import */ var _auto_AutoScanner__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ./auto/AutoScanner */ "./src/ts/auto/AutoScanner.ts");
+/* harmony import */ var _ListenPageSwitch__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ./ListenPageSwitch */ "./src/ts/ListenPageSwitch.ts");
+/* harmony import */ var _PageType__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! ./PageType */ "./src/ts/PageType.ts");
+/* harmony import */ var _CenterPanel__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! ./CenterPanel */ "./src/ts/CenterPanel.ts");
+/* harmony import */ var _setting_Form__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(/*! ./setting/Form */ "./src/ts/setting/Form.ts");
+/* harmony import */ var _InitPage__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(/*! ./InitPage */ "./src/ts/InitPage.ts");
+/* harmony import */ var _QuickCrawl__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(/*! ./QuickCrawl */ "./src/ts/QuickCrawl.ts");
+/* harmony import */ var _Tip__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(/*! ./Tip */ "./src/ts/Tip.ts");
+/* harmony import */ var _Tip__WEBPACK_IMPORTED_MODULE_8___default = /*#__PURE__*/__webpack_require__.n(_Tip__WEBPACK_IMPORTED_MODULE_8__);
+/* harmony import */ var _OutputPanel__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(/*! ./OutputPanel */ "./src/ts/OutputPanel.ts");
+/* harmony import */ var _download_DownloadControl__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(/*! ./download/DownloadControl */ "./src/ts/download/DownloadControl.ts");
+/* harmony import */ var _download_ShowStatusOnTitle__WEBPACK_IMPORTED_MODULE_11__ = __webpack_require__(/*! ./download/ShowStatusOnTitle */ "./src/ts/download/ShowStatusOnTitle.ts");
+/* harmony import */ var _download_Resume__WEBPACK_IMPORTED_MODULE_12__ = __webpack_require__(/*! ./download/Resume */ "./src/ts/download/Resume.ts");
+/* harmony import */ var _ShowNotification__WEBPACK_IMPORTED_MODULE_13__ = __webpack_require__(/*! ./ShowNotification */ "./src/ts/ShowNotification.ts");
+/* harmony import */ var _ShowHowToUse__WEBPACK_IMPORTED_MODULE_14__ = __webpack_require__(/*! ./ShowHowToUse */ "./src/ts/ShowHowToUse.ts");
+/* harmony import */ var _ShowWhatIsNew__WEBPACK_IMPORTED_MODULE_15__ = __webpack_require__(/*! ./ShowWhatIsNew */ "./src/ts/ShowWhatIsNew.ts");
+/* harmony import */ var _CheckUnsupportBrowser__WEBPACK_IMPORTED_MODULE_16__ = __webpack_require__(/*! ./CheckUnsupportBrowser */ "./src/ts/CheckUnsupportBrowser.ts");
 /*
  * project: Pixiv Fanbox Downloader
  * author:  xuejianxianzun; 雪见仙尊
@@ -11352,6 +11430,7 @@ __webpack_require__.r(__webpack_exports__);
  * E-mail:  xuejianxianzun@gmail.com
  * QQ group:  853021998
  */
+
 
 
 

@@ -12,7 +12,9 @@ import { AutoCreatorProfile } from './auto/AutoTypes'
 import { getAutoProfile, setAutoProfile } from './auto/AutoSession'
 
 class InitPostPage extends InitPageBase {
-  private autoMessageListener?: Parameters<typeof chrome.runtime.onMessage.addListener>[0]
+  private autoMessageListener?: Parameters<
+    typeof chrome.runtime.onMessage.addListener
+  >[0]
   private autoEventListeners: [string, EventListener][] = []
   constructor() {
     super()
@@ -111,8 +113,12 @@ class InitPostPage extends InitPageBase {
       const data = await API.getPost(
         Utils.getURLPathField(window.location.pathname, 'posts'),
       )
+      const post = data.body.post || data.body
+      if (getAutoProfile() && post.body === null) {
+        throw new Error('この投稿の本文にアクセスできません')
+      }
       crawlInterval.addTime()
-      await this.fetchAllComments(data.body.post || data.body)
+      await this.fetchAllComments(post)
       this.afterFetchPost(data)
     } catch (error) {
       console.log(error)
