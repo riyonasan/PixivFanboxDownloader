@@ -118,6 +118,8 @@ const totalDownload = new TotalDownload();
 
 __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _AutoTypes__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ./AutoTypes */ "./src/ts/auto/AutoTypes.ts");
+/* harmony import */ var _Ntfy__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ./Ntfy */ "./src/ts/auto/Ntfy.ts");
+
 
 const alarmName = 'fanboxAutoCheck';
 let checking = false;
@@ -343,6 +345,7 @@ async function startNextPostInternal() {
             },
         });
         console.error('Automatic FANBOX post could not start', error);
+        await (0,_Ntfy__WEBPACK_IMPORTED_MODULE_1__.notifyAutoPost)(task, false).catch((notificationError) => console.warn('Automatic FANBOX notification failed', notificationError));
     }
 }
 async function startNextPost() {
@@ -407,6 +410,7 @@ async function finishPost(message) {
     await chrome.storage.local.remove(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoActiveKey);
     await new Promise((resolve) => setTimeout(resolve, 1000));
     await chrome.tabs.remove(active.tabId).catch(() => { });
+    await (0,_Ntfy__WEBPACK_IMPORTED_MODULE_1__.notifyAutoPost)(active.task, message.success).catch((error) => console.warn('Automatic FANBOX notification failed', error));
     void startNextPost().catch((error) => console.error('Automatic FANBOX import failed', error));
 }
 chrome.runtime.onMessage.addListener((message) => {
@@ -462,6 +466,50 @@ function matchesAutoFee(profile, fee) {
     return (profile.pay &&
         (profile.minFee === null || fee >= profile.minFee) &&
         (profile.maxFee === null || fee <= profile.maxFee));
+}
+
+
+/***/ },
+
+/***/ "./src/ts/auto/Ntfy.ts"
+/*!*****************************!*\
+  !*** ./src/ts/auto/Ntfy.ts ***!
+  \*****************************/
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   notifyAutoPost: () => (/* binding */ notifyAutoPost)
+/* harmony export */ });
+let configuredURL;
+function getNtfyURL() {
+    configuredURL ??= fetch(chrome.runtime.getURL('ntfy-config.json'))
+        .then(async (response) => {
+        if (!response.ok)
+            throw new Error(`Notification config: HTTP ${response.status}`);
+        const config = (await response.json());
+        return typeof config.url === 'string' && config.url ? config.url : null;
+    });
+    return configuredURL;
+}
+async function notifyAutoPost(task, success) {
+    const url = await getNtfyURL();
+    if (!url)
+        return;
+    const postURL = `https://www.fanbox.cc/@${encodeURIComponent(task.creatorId)}/posts/${encodeURIComponent(task.postId)}`;
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+            Title: success ? 'FANBOX auto task completed' : 'FANBOX auto task failed',
+            Click: postURL,
+        },
+        body: `${task.creatorId}: ${success ? '自動取得の処理が完了しました。' : '自動取得に失敗しました。次回再試行します。'}\n${postURL}`,
+        credentials: 'omit',
+        signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok)
+        throw new Error(`ntfy request failed (HTTP ${response.status})`);
 }
 
 

@@ -8,6 +8,7 @@ import {
   autoStatusKey,
   matchesAutoFee,
 } from './AutoTypes'
+import { notifyAutoPost } from './Ntfy'
 
 interface ActivePost {
   tabId: number
@@ -244,6 +245,9 @@ async function startNextPostInternal() {
       },
     })
     console.error('Automatic FANBOX post could not start', error)
+    await notifyAutoPost(task, false).catch((notificationError) =>
+      console.warn('Automatic FANBOX notification failed', notificationError),
+    )
   }
 }
 
@@ -318,6 +322,9 @@ async function finishPost(message: {
   await chrome.storage.local.remove(autoActiveKey)
   await new Promise((resolve) => setTimeout(resolve, 1000))
   await chrome.tabs.remove(active.tabId).catch(() => {})
+  await notifyAutoPost(active.task, message.success).catch((error) =>
+    console.warn('Automatic FANBOX notification failed', error),
+  )
   void startNextPost().catch((error) =>
     console.error('Automatic FANBOX import failed', error),
   )

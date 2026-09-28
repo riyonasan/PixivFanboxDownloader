@@ -36,7 +36,8 @@
   ],
   "host_permissions": [
     "*://*.fanbox.cc/*",
-    "http://localhost:41595/*"
+    "http://localhost:41595/*",
+    "https://ntfy.sh/*"
   ],
   "web_accessible_resources": [
     {
