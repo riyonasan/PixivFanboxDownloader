@@ -288,6 +288,9 @@ async function finishPost(message: {
   postId: string
   startedAt: number
   success: boolean
+  skipped?: boolean
+  creatorName?: string
+  postTitle?: string
 }) {
   const active = await getActive()
   if (
@@ -300,7 +303,7 @@ async function finishPost(message: {
   const stored = await chrome.storage.local.get(autoPendingKey)
   const pending = (stored[autoPendingKey] || []) as AutoPendingPost[]
   await chrome.storage.local.set({
-    [autoPendingKey]: message.success
+    [autoPendingKey]: message.success || message.skipped
       ? pending.filter((item) => item.postId !== message.postId)
       : pending.map((item) =>
           item.postId === message.postId
@@ -309,10 +312,17 @@ async function finishPost(message: {
         ),
   })
   const previousStatus = await chrome.storage.local.get(autoStatusKey)
+  const status = (previousStatus[autoStatusKey] || {}) as AutoStatus
   await chrome.storage.local.set({
     [autoStatusKey]: {
-      ...(previousStatus[autoStatusKey] as AutoStatus | undefined),
-      ...(message.success
+      ...status,
+      ...(message.skipped
+        ? {
+            lastError: status.lastError?.startsWith(`${message.creatorId}:`)
+              ? ''
+              : status.lastError,
+          }
+        : message.success
         ? { lastCompletedAt: Date.now(), lastError: '' }
         : {
             lastError: `${message.creatorId}: 取り込みに失敗しました。次回再試行します。`,
@@ -322,9 +332,11 @@ async function finishPost(message: {
   await chrome.storage.local.remove(autoActiveKey)
   await new Promise((resolve) => setTimeout(resolve, 1000))
   await chrome.tabs.remove(active.tabId).catch(() => {})
-  await notifyAutoPost(active.task, message.success).catch((error) =>
-    console.warn('Automatic FANBOX notification failed', error),
-  )
+  if (!message.skipped) {
+    await notifyAutoPost(active.task, message.success, message).catch((error) =>
+      console.warn('Automatic FANBOX notification failed', error),
+    )
+  }
   void startNextPost().catch((error) =>
     console.error('Automatic FANBOX import failed', error),
   )

@@ -12,19 +12,29 @@ function getNtfyURL() {
   return configuredURL
 }
 
-export async function notifyAutoPost(task: AutoPendingPost, success: boolean) {
+export async function notifyAutoPost(
+  task: AutoPendingPost,
+  success: boolean,
+  details?: { creatorName?: string; postTitle?: string },
+) {
   const url = await getNtfyURL()
   if (!url) return
 
   const postURL = `https://www.fanbox.cc/@${encodeURIComponent(task.creatorId)}/posts/${encodeURIComponent(task.postId)}`
+  if (success && (!details?.creatorName || !details.postTitle)) {
+    throw new Error('FANBOX post notification is missing its name or title')
+  }
+  const headers: Record<string, string> = {
+    'Content-Type': 'text/plain; charset=utf-8',
+    Click: postURL,
+  }
+  if (!success) headers.Title = 'FANBOX auto task failed'
   const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'text/plain; charset=utf-8',
-      Title: success ? 'FANBOX auto task completed' : 'FANBOX auto task failed',
-      Click: postURL,
-    },
-    body: `${task.creatorId}: ${success ? '自動取得の処理が完了しました。' : '自動取得に失敗しました。次回再試行します。'}\n${postURL}`,
+    headers,
+    body: success
+      ? `${details!.creatorName}\n${details!.postTitle}\n${postURL}`
+      : `${task.creatorId}: 自動取得に失敗しました。次回再試行します。\n${postURL}`,
     credentials: 'omit',
     signal: AbortSignal.timeout(10000),
   })

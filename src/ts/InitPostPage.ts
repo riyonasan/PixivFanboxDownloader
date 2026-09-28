@@ -12,6 +12,7 @@ import { AutoCreatorProfile } from './auto/AutoTypes'
 import { getAutoProfile, setAutoProfile } from './auto/AutoSession'
 
 class InitPostPage extends InitPageBase {
+  private autoPostDetails?: { creatorName: string; postTitle: string }
   private autoMessageListener?: Parameters<
     typeof chrome.runtime.onMessage.addListener
   >[0]
@@ -43,18 +44,26 @@ class InitPostPage extends InitPageBase {
       postId: string
       startedAt: number
     } | null = null
-    const finish = (success: boolean) => {
+    const finish = (result: 'success' | 'failure' | 'skipped') => {
       if (!active) return
       const task = active
       active = null
       setAutoProfile(null)
-      chrome.runtime.sendMessage({ msg: 'auto_result', ...task, success })
+      chrome.runtime.sendMessage({
+        msg: 'auto_result',
+        ...task,
+        ...this.autoPostDetails,
+        success: result === 'success',
+        skipped: result === 'skipped',
+      })
+      this.autoPostDetails = undefined
     }
     this.autoEventListeners = [
-      [EVT.list.downloadComplete, () => finish(true)],
-      [EVT.list.crawlEmpty, () => finish(true)],
-      [EVT.list.downloadStop, () => finish(false)],
-      [EVT.list.downloadPause, () => finish(false)],
+      [EVT.list.downloadComplete, () => finish('success')],
+      [EVT.list.crawlEmpty, () => finish('success')],
+      [EVT.list.downloadStop, () => finish('failure')],
+      [EVT.list.downloadPause, () => finish('failure')],
+      [EVT.list.autoSkipRestricted, () => finish('skipped')],
     ]
     for (const [event, listener] of this.autoEventListeners) {
       window.addEventListener(event, listener)
@@ -68,6 +77,7 @@ class InitPostPage extends InitPageBase {
         return
       }
       const start = () => {
+        this.autoPostDetails = undefined
         active = {
           creatorId: message.profile.creatorId,
           postId,
@@ -99,6 +109,7 @@ class InitPostPage extends InitPageBase {
       window.removeEventListener(event, listener)
     }
     setAutoProfile(null)
+    this.autoPostDetails = undefined
   }
 
   protected nextStep() {
@@ -114,8 +125,19 @@ class InitPostPage extends InitPageBase {
         Utils.getURLPathField(window.location.pathname, 'posts'),
       )
       const post = data.body.post || data.body
-      if (getAutoProfile() && post.body === null) {
-        throw new Error('この投稿の本文にアクセスできません')
+      const autoProfile = getAutoProfile()
+      if (autoProfile) {
+        this.autoPostDetails = {
+          creatorName: post.user?.name || autoProfile.name,
+          postTitle: post.title,
+        }
+        if (post.body === null) {
+          if (post.feeRequired > 0 && post.isRestricted) {
+            EVT.fire('autoSkipRestricted')
+            return
+          }
+          throw new Error('この投稿の本文にアクセスできません')
+        }
       }
       crawlInterval.addTime()
       await this.fetchAllComments(post)

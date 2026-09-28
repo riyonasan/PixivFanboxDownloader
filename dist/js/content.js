@@ -805,6 +805,7 @@ class EVENT {
         crawlStart: 'crawlStart',
         crawlFinish: 'crawlFinish',
         crawlEmpty: 'crawlEmpty',
+        autoSkipRestricted: 'autoSkipRestricted',
         crawlError: 'crawlError',
         addResult: 'addResult',
         downloadStart: 'downloadStart',
@@ -2279,6 +2280,7 @@ __webpack_require__.r(__webpack_exports__);
 
 
 class InitPostPage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBase {
+    autoPostDetails;
     autoMessageListener;
     autoEventListeners = [];
     constructor() {
@@ -2298,19 +2300,27 @@ class InitPostPage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
             }
         });
         let active = null;
-        const finish = (success) => {
+        const finish = (result) => {
             if (!active)
                 return;
             const task = active;
             active = null;
             (0,_auto_AutoSession__WEBPACK_IMPORTED_MODULE_10__.setAutoProfile)(null);
-            chrome.runtime.sendMessage({ msg: 'auto_result', ...task, success });
+            chrome.runtime.sendMessage({
+                msg: 'auto_result',
+                ...task,
+                ...this.autoPostDetails,
+                success: result === 'success',
+                skipped: result === 'skipped',
+            });
+            this.autoPostDetails = undefined;
         };
         this.autoEventListeners = [
-            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.downloadComplete, () => finish(true)],
-            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.crawlEmpty, () => finish(true)],
-            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.downloadStop, () => finish(false)],
-            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.downloadPause, () => finish(false)],
+            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.downloadComplete, () => finish('success')],
+            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.crawlEmpty, () => finish('success')],
+            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.downloadStop, () => finish('failure')],
+            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.downloadPause, () => finish('failure')],
+            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.autoSkipRestricted, () => finish('skipped')],
         ];
         for (const [event, listener] of this.autoEventListeners) {
             window.addEventListener(event, listener);
@@ -2324,6 +2334,7 @@ class InitPostPage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
                 return;
             }
             const start = () => {
+                this.autoPostDetails = undefined;
                 active = {
                     creatorId: message.profile.creatorId,
                     postId,
@@ -2355,6 +2366,7 @@ class InitPostPage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
             window.removeEventListener(event, listener);
         }
         ;(0,_auto_AutoSession__WEBPACK_IMPORTED_MODULE_10__.setAutoProfile)(null);
+        this.autoPostDetails = undefined;
     }
     nextStep() {
         this.getPostDataThreadNum = 1;
@@ -2365,8 +2377,19 @@ class InitPostPage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
         try {
             const data = await _API__WEBPACK_IMPORTED_MODULE_4__.API.getPost(_utils_Utils__WEBPACK_IMPORTED_MODULE_5__.Utils.getURLPathField(window.location.pathname, 'posts'));
             const post = data.body.post || data.body;
-            if ((0,_auto_AutoSession__WEBPACK_IMPORTED_MODULE_10__.getAutoProfile)() && post.body === null) {
-                throw new Error('この投稿の本文にアクセスできません');
+            const autoProfile = (0,_auto_AutoSession__WEBPACK_IMPORTED_MODULE_10__.getAutoProfile)();
+            if (autoProfile) {
+                this.autoPostDetails = {
+                    creatorName: post.user?.name || autoProfile.name,
+                    postTitle: post.title,
+                };
+                if (post.body === null) {
+                    if (post.feeRequired > 0 && post.isRestricted) {
+                        _EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.fire('autoSkipRestricted');
+                        return;
+                    }
+                    throw new Error('この投稿の本文にアクセスできません');
+                }
             }
             _CrawlInterval__WEBPACK_IMPORTED_MODULE_9__.crawlInterval.addTime();
             await this.fetchAllComments(post);

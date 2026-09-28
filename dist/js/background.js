@@ -390,27 +390,36 @@ async function finishPost(message) {
     const stored = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey);
     const pending = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []);
     await chrome.storage.local.set({
-        [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: message.success
+        [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: message.success || message.skipped
             ? pending.filter((item) => item.postId !== message.postId)
             : pending.map((item) => item.postId === message.postId
                 ? { ...item, retryAfter: Date.now() + 60 * 60 * 1000 }
                 : item),
     });
     const previousStatus = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey);
+    const status = (previousStatus[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey] || {});
     await chrome.storage.local.set({
         [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey]: {
-            ...previousStatus[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey],
-            ...(message.success
-                ? { lastCompletedAt: Date.now(), lastError: '' }
-                : {
-                    lastError: `${message.creatorId}: 取り込みに失敗しました。次回再試行します。`,
-                }),
+            ...status,
+            ...(message.skipped
+                ? {
+                    lastError: status.lastError?.startsWith(`${message.creatorId}:`)
+                        ? ''
+                        : status.lastError,
+                }
+                : message.success
+                    ? { lastCompletedAt: Date.now(), lastError: '' }
+                    : {
+                        lastError: `${message.creatorId}: 取り込みに失敗しました。次回再試行します。`,
+                    }),
         },
     });
     await chrome.storage.local.remove(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoActiveKey);
     await new Promise((resolve) => setTimeout(resolve, 1000));
     await chrome.tabs.remove(active.tabId).catch(() => { });
-    await (0,_Ntfy__WEBPACK_IMPORTED_MODULE_1__.notifyAutoPost)(active.task, message.success).catch((error) => console.warn('Automatic FANBOX notification failed', error));
+    if (!message.skipped) {
+        await (0,_Ntfy__WEBPACK_IMPORTED_MODULE_1__.notifyAutoPost)(active.task, message.success, message).catch((error) => console.warn('Automatic FANBOX notification failed', error));
+    }
     void startNextPost().catch((error) => console.error('Automatic FANBOX import failed', error));
 }
 chrome.runtime.onMessage.addListener((message) => {
@@ -492,19 +501,26 @@ function getNtfyURL() {
     });
     return configuredURL;
 }
-async function notifyAutoPost(task, success) {
+async function notifyAutoPost(task, success, details) {
     const url = await getNtfyURL();
     if (!url)
         return;
     const postURL = `https://www.fanbox.cc/@${encodeURIComponent(task.creatorId)}/posts/${encodeURIComponent(task.postId)}`;
+    if (success && (!details?.creatorName || !details.postTitle)) {
+        throw new Error('FANBOX post notification is missing its name or title');
+    }
+    const headers = {
+        'Content-Type': 'text/plain; charset=utf-8',
+        Click: postURL,
+    };
+    if (!success)
+        headers.Title = 'FANBOX auto task failed';
     const response = await fetch(url, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'text/plain; charset=utf-8',
-            Title: success ? 'FANBOX auto task completed' : 'FANBOX auto task failed',
-            Click: postURL,
-        },
-        body: `${task.creatorId}: ${success ? '自動取得の処理が完了しました。' : '自動取得に失敗しました。次回再試行します。'}\n${postURL}`,
+        headers,
+        body: success
+            ? `${details.creatorName}\n${details.postTitle}\n${postURL}`
+            : `${task.creatorId}: 自動取得に失敗しました。次回再試行します。\n${postURL}`,
         credentials: 'omit',
         signal: AbortSignal.timeout(10000),
     });
