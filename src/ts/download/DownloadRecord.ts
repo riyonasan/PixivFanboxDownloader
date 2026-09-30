@@ -61,6 +61,7 @@ class DownloadRecord {
       // 如果文件名异常，不保存这个下载记录，以便用户之后重新下载这个文件
       if (
         successData.source !== 'eagle' &&
+        successData.source !== 'queue' &&
         !successData.url.startsWith('blob') &&
         !successData.uuid
       ) {

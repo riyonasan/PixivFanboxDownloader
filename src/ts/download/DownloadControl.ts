@@ -23,6 +23,7 @@ import { Config } from '../Config'
 import { getTotalDownload } from './GetTotalDownload'
 import { createHtmlDocument } from './CreateHtmlDocument'
 import { FileResult, ResultMeta } from '../StoreType'
+import { ownTask } from '../queue/Ownership'
 
 interface TaskList {
   [id: string]: {
@@ -169,9 +170,12 @@ class DownloadControl {
       const completeLog = this.saveToEagle
         ? lang.transl('_Eagle登録受付完了')
         : lang.transl('_下载完毕')
-      this.setDownStateText(completeText, Colors.textSuccess)
-      log.success(completeLog, 2)
-      toast.success(completeText, {
+      const actualText = this.saveToEagle
+        ? 'Files accepted by durable queue; Eagle registration awaits verification'
+        : completeText
+      this.setDownStateText(actualText, Colors.textSuccess)
+      log.success(this.saveToEagle ? actualText : completeLog, 2)
+      toast.success(actualText, {
         position: 'topCenter',
       })
     })
@@ -208,9 +212,10 @@ class DownloadControl {
 
     // 所有文件正常下载完毕（跳过下载的文件也算正常下载）
     if (this.downloaded === store.result.length) {
+      const accepted = this.saveToEagle
       window.setTimeout(() => {
         // 延后触发下载完成的事件。因为下载完成事件是由上游事件（跳过下载，或下载成功事件）派生的，如果这里不延迟触发，可能导致其他模块先接收到下载完成事件，后接收到上游事件。
-        EVT.fire('downloadComplete')
+        EVT.fire('downloadComplete', { accepted })
       }, 0)
       this.reset()
     }
@@ -331,7 +336,11 @@ class DownloadControl {
   }
 
   // 开始下载
-  private startDownload() {
+  private async startDownload() {
+    if (!(await ownTask())) {
+      log.warning('This post is already being collected in another tab')
+      return
+    }
     // 如果正在下载中，或无图片，则不予处理
     if (states.busy || store.result.length === 0) {
       return
@@ -431,6 +440,7 @@ class DownloadControl {
 
   private async downloadSuccess(data: DonwloadSuccessData) {
     const task = this.taskList[data.id]
+    if (!task || downloadStates.states[task.index] === 1) return
     // 更改这个任务状态为“已完成”
     downloadStates.setState(task.index, 1)
 

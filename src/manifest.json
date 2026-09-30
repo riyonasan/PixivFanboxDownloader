@@ -20,9 +20,16 @@
   },
   "content_scripts": [
     {
-      "css": ["style/style.css"],
-      "js": ["js/content.js", "lib/iconfont.js"],
-      "matches": ["*://*.fanbox.cc/*"],
+      "css": [
+        "style/style.css"
+      ],
+      "js": [
+        "js/content.js",
+        "lib/iconfont.js"
+      ],
+      "matches": [
+        "*://*.fanbox.cc/*"
+      ],
       "run_at": "document_end"
     }
   ],
@@ -46,9 +53,13 @@
         "icon/logo128.png",
         "images/cardMask.png"
       ],
-      "matches": ["*://*.fanbox.cc/*"]
+      "matches": [
+        "*://*.fanbox.cc/*"
+      ]
     }
   ],
   "incognito": "split",
-  "homepage_url": "https://github.com/xuejianxianzun/PixivFanboxDownloader"
+  "homepage_url": "https://github.com/xuejianxianzun/PixivFanboxDownloader",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5LhN9ez9KMtQ2QxaU2WpRcrdYnX5V4i0RiGuoeoj7rltzAEvlpo86GmfEcqW1p+mexg6gTSWkzpMxE7l72XXbRo2Hc9Va26YeBD13R1kkps5LvLBYeuWPJ6fKLna2/gcjedS049X2mLMfDLUWKElD0jCUSZ8WNT0JEcLRpZk301mcIk9uYpd5l/kMqwJVv7EKtuIr8gL2bdMLvgJ7lhlPSQYyA5ZiTUbKtZ0mH93vG5/moxPmbIqaqz5bODLGgKIV5lUaCnBuk6t+94qDGRBS4tj4ZfeZwTN+398FkiyMvMFyokHUQd0onIYsnTFA3UQzDiNNBHLN+DVUqN7D38AIwIDAQAB",
+  "options_page": "queue.html"
 }

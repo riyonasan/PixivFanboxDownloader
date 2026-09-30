@@ -6,6 +6,7 @@ import {
 import { totalDownload } from './TotalDownload'
 import { eagle } from './eagle/Eagle'
 import './auto/AutoScheduler'
+import './queue/Runtime'
 
 // 当点击扩展图标时，显示/隐藏下载面板
 chrome.action.onClicked.addListener(function (tab) {
@@ -65,6 +66,14 @@ chrome.runtime.onMessage.addListener(function (
     return true
   }
 
+  if ((msg as any).msg === 'queue_downloaded') {
+    if (sender.tab?.id !== undefined)
+      chrome.tabs.sendMessage(sender.tab.id, {
+        msg: 'downloaded',
+        data: { ...(msg as any).data, tabId: sender.tab.id },
+      })
+    return false
+  }
   void handleDownloadMessage(msg, sender)
   return false
 })
@@ -102,13 +111,9 @@ async function handleDownloadMessage(
       if (!msg.website) {
         throw new Error('The FANBOX post URL is missing')
       }
-      await eagle.addFromURL(
-        msg.fileUrl,
-        msg.fileName,
-        msg.website,
-        `${tabId}:${msg.taskBatch}`,
+      throw new Error(
+        'Legacy immediate Eagle import disabled; reload this tab to use the durable queue',
       )
-      chrome.tabs.sendMessage(tabId, { msg: 'downloaded', data })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       chrome.tabs.sendMessage(tabId, {

@@ -7,6 +7,7 @@ import { downloadStates, DLStatesI } from './DownloadStates'
 import { Result } from '../StoreType'
 import { IndexedDB } from '../utils/IndexedDB'
 import { toast } from '../Toast'
+import { ownTask } from '../queue/Ownership'
 
 interface TaskData {
   id: number
@@ -96,6 +97,7 @@ class Resume {
       return
     }
 
+    if (!(await ownTask())) return
     log.warning(lang.transl('_正在恢复抓取结果'))
 
     store.result = taskData.data
@@ -156,6 +158,7 @@ class Resume {
 
   // 存储抓取结果
   private async saveData() {
+    if (!(await ownTask())) return
     if (store.result.length === 0) {
       return
     }

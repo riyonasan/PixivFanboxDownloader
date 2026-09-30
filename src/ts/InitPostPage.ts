@@ -44,7 +44,10 @@ class InitPostPage extends InitPageBase {
       postId: string
       startedAt: number
     } | null = null
-    const finish = (result: 'success' | 'failure' | 'skipped') => {
+    const finish = (
+      result: 'success' | 'failure' | 'skipped',
+      accepted = false,
+    ) => {
       if (!active) return
       const task = active
       active = null
@@ -54,12 +57,17 @@ class InitPostPage extends InitPageBase {
         ...task,
         ...this.autoPostDetails,
         success: result === 'success',
+        accepted: result === 'success' && accepted,
         skipped: result === 'skipped',
       })
       this.autoPostDetails = undefined
     }
     this.autoEventListeners = [
-      [EVT.list.downloadComplete, () => finish('success')],
+      [
+        EVT.list.downloadComplete,
+        (event) =>
+          finish('success', !!(event as CustomEvent).detail?.data?.accepted),
+      ],
       [EVT.list.crawlEmpty, () => finish('success')],
       [EVT.list.downloadStop, () => finish('failure')],
       [EVT.list.downloadPause, () => finish('failure')],

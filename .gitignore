@@ -32,3 +32,6 @@ _metadata
 .env.*
 !.env.example
 dist/ntfy-config.json
+
+.test-build/
+collector-profile/

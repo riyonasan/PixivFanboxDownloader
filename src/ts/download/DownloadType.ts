@@ -30,7 +30,7 @@ export interface DonwloadSuccessData {
   tabId: number
   uuid: boolean
   size: number
-  source?: 'eagle'
+  source?: 'eagle' | 'queue'
   recordKey?: string
 }
 

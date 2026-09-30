@@ -19,6 +19,7 @@ interface EagleItemData {
   headers?: {
     referer: string
   }
+  annotation?: string
 }
 
 interface EagleListedItem {
@@ -44,6 +45,7 @@ class Eagle {
     fileName: string,
     website: string,
     scope: string,
+    annotation?: string,
   ) {
     this.resetCache(scope)
 
@@ -61,6 +63,7 @@ class Eagle {
       name: this.getItemName(fileName),
       website,
       folderId,
+      annotation,
       headers: eagleURL.startsWith('data:')
         ? undefined
         : this.getHeaders(website),

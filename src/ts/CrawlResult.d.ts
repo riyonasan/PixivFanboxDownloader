@@ -451,7 +451,6 @@ export {
   EmbedData,
   VideoData,
   CreatorData,
-  Creator,
   AllSupportingPlan,
   SupportInfo,
   Plan,

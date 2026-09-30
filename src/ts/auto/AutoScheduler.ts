@@ -215,16 +215,6 @@ async function startNextPostInternal() {
   )
   if (!task) return
   const profile = profiles.find((item) => item.creatorId === task.creatorId)!
-  const currentSettings = stored.fanboxSetting as
-    { saveToEagle?: boolean } | undefined
-  if (currentSettings?.saveToEagle) {
-    try {
-      await request('http://localhost:41595/api/application/info')
-    } catch {
-      console.warn('Automatic FANBOX import is waiting for Eagle')
-      return
-    }
-  }
   const tab = await chrome.tabs.create({
     url: `https://www.fanbox.cc/@${encodeURIComponent(task.creatorId)}/posts/${encodeURIComponent(task.postId)}`,
     active: false,
@@ -288,6 +278,7 @@ async function finishPost(message: {
   postId: string
   startedAt: number
   success: boolean
+  accepted?: boolean
   skipped?: boolean
   creatorName?: string
   postTitle?: string
@@ -303,13 +294,14 @@ async function finishPost(message: {
   const stored = await chrome.storage.local.get(autoPendingKey)
   const pending = (stored[autoPendingKey] || []) as AutoPendingPost[]
   await chrome.storage.local.set({
-    [autoPendingKey]: message.success || message.skipped
-      ? pending.filter((item) => item.postId !== message.postId)
-      : pending.map((item) =>
-          item.postId === message.postId
-            ? { ...item, retryAfter: Date.now() + 60 * 60 * 1000 }
-            : item,
-        ),
+    [autoPendingKey]:
+      message.success || message.skipped
+        ? pending.filter((item) => item.postId !== message.postId)
+        : pending.map((item) =>
+            item.postId === message.postId
+              ? { ...item, retryAfter: Date.now() + 60 * 60 * 1000 }
+              : item,
+          ),
   })
   const previousStatus = await chrome.storage.local.get(autoStatusKey)
   const status = (previousStatus[autoStatusKey] || {}) as AutoStatus
@@ -323,10 +315,15 @@ async function finishPost(message: {
               : status.lastError,
           }
         : message.success
-        ? { lastCompletedAt: Date.now(), lastError: '' }
-        : {
-            lastError: `${message.creatorId}: 取り込みに失敗しました。次回再試行します。`,
-          }),
+          ? {
+              ...(message.accepted
+                ? { lastAcceptedAt: Date.now() }
+                : { lastCompletedAt: Date.now() }),
+              lastError: '',
+            }
+          : {
+              lastError: `${message.creatorId}: 取り込みに失敗しました。次回再試行します。`,
+            }),
     },
   })
   await chrome.storage.local.remove(autoActiveKey)

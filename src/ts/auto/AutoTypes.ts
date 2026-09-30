@@ -23,6 +23,7 @@ export const autoStatusKey = 'autoDownloadStatus'
 export interface AutoStatus {
   lastCheckedAt?: number
   lastCompletedAt?: number
+  lastAcceptedAt?: number
   lastError?: string
 }
 
