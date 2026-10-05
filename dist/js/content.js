@@ -7436,9 +7436,9 @@ class ShowSkipCount {
 
 /***/ },
 
-/***/ "./src/ts/download/ShowStatusOnTitle.ts"
+/***/ "./src/ts/download/showStatusOnTitle.ts"
 /*!**********************************************!*\
-  !*** ./src/ts/download/ShowStatusOnTitle.ts ***!
+  !*** ./src/ts/download/showStatusOnTitle.ts ***!
   \**********************************************/
 (__unused_webpack_module, __webpack_exports__, __webpack_require__) {
 
@@ -11542,7 +11542,7 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _Tip__WEBPACK_IMPORTED_MODULE_8___default = /*#__PURE__*/__webpack_require__.n(_Tip__WEBPACK_IMPORTED_MODULE_8__);
 /* harmony import */ var _OutputPanel__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(/*! ./OutputPanel */ "./src/ts/OutputPanel.ts");
 /* harmony import */ var _download_DownloadControl__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(/*! ./download/DownloadControl */ "./src/ts/download/DownloadControl.ts");
-/* harmony import */ var _download_ShowStatusOnTitle__WEBPACK_IMPORTED_MODULE_11__ = __webpack_require__(/*! ./download/ShowStatusOnTitle */ "./src/ts/download/ShowStatusOnTitle.ts");
+/* harmony import */ var _download_showStatusOnTitle__WEBPACK_IMPORTED_MODULE_11__ = __webpack_require__(/*! ./download/showStatusOnTitle */ "./src/ts/download/showStatusOnTitle.ts");
 /* harmony import */ var _download_Resume__WEBPACK_IMPORTED_MODULE_12__ = __webpack_require__(/*! ./download/Resume */ "./src/ts/download/Resume.ts");
 /* harmony import */ var _ShowNotification__WEBPACK_IMPORTED_MODULE_13__ = __webpack_require__(/*! ./ShowNotification */ "./src/ts/ShowNotification.ts");
 /* harmony import */ var _ShowHowToUse__WEBPACK_IMPORTED_MODULE_14__ = __webpack_require__(/*! ./ShowHowToUse */ "./src/ts/ShowHowToUse.ts");
