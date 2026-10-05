@@ -18,7 +18,6 @@ yarn-error.log*
 
 # lock
 yarn.lock
-package-lock.json
 
 # build file
 *.zip

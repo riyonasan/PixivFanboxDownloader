@@ -83,3 +83,7 @@ FANBOXの「フォロー中のクリエイター」または「支援中のク�
 Patreon:
 
 <a href='https://www.patreon.com/xuejianxianzun'><img src='https://c5.patreon.com/external/logo/become_a_patron_button.png' alt='Become a patron' width='140px' /></a>
+
+## 開発・検査
+
+実記事や外部サービスを使わない検査手順は[DEV.md](DEV.md)、独自変更履歴は[CHANGELOG-JA.md](CHANGELOG-JA.md)を参照してください。既存5.0.0を維持し、新しいリリースは宣言していません。
