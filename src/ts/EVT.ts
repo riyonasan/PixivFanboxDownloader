@@ -21,6 +21,7 @@ class EVENT {
     crawlStart: 'crawlStart',
     crawlFinish: 'crawlFinish',
     crawlEmpty: 'crawlEmpty',
+    autoSkipRestricted: 'autoSkipRestricted',
     crawlError: 'crawlError',
     addResult: 'addResult',
     downloadStart: 'downloadStart',

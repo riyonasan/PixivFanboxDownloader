@@ -18,7 +18,6 @@ yarn-error.log*
 
 # lock
 yarn.lock
-package-lock.json
 
 # build file
 *.zip
@@ -26,3 +25,9 @@ package-lock.json
 _metadata
 
 .eslintcache
+
+# Local notification destination (never commit a topic URL)
+.env
+.env.*
+!.env.example
+dist/ntfy-config.json

@@ -805,6 +805,7 @@ class EVENT {
         crawlStart: 'crawlStart',
         crawlFinish: 'crawlFinish',
         crawlEmpty: 'crawlEmpty',
+        autoSkipRestricted: 'autoSkipRestricted',
         crawlError: 'crawlError',
         addResult: 'addResult',
         downloadStart: 'downloadStart',
@@ -1486,6 +1487,17 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
         this.init();
     }
     crawlFlag = 'supporting';
+    autoManagerListener;
+    clearAutoManagerListener() {
+        if (this.autoManagerListener) {
+            chrome.storage.onChanged.removeListener(this.autoManagerListener);
+            this.autoManagerListener = undefined;
+        }
+    }
+    destroy() {
+        this.clearAutoManagerListener();
+        _Tools__WEBPACK_IMPORTED_MODULE_2__.Tools.clearSlot('crawlBtns');
+    }
     // 添加中间按钮
     addCrawlBtns() {
         if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type === _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.list.Following ||
@@ -1531,14 +1543,14 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
         const slot = _Tools__WEBPACK_IMPORTED_MODULE_2__.Tools.findSlot('crawlBtns');
         const existing = slot.querySelector('.autoCreatorManager');
         if (existing) {
+            this.clearAutoManagerListener();
             existing.remove();
             return;
         }
         button.disabled = true;
         try {
             const creators = currentPage === _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.list.Following
-                ? (await _API__WEBPACK_IMPORTED_MODULE_4__.API.request('https://api.fanbox.cc/creator.listFollowing'))
-                    .body.creators.map((item) => ({
+                ? (await _API__WEBPACK_IMPORTED_MODULE_4__.API.request('https://api.fanbox.cc/creator.listFollowing')).body.creators.map((item) => ({
                     creatorId: item.creatorId,
                     name: item.user.name,
                 }))
@@ -1552,7 +1564,10 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
             const uniqueCreators = Array.from(new Map(creators.map((item) => [item.creatorId, item])).values());
             for (const profile of profiles) {
                 if (!uniqueCreators.some((item) => item.creatorId === profile.creatorId)) {
-                    uniqueCreators.push({ creatorId: profile.creatorId, name: profile.name });
+                    uniqueCreators.push({
+                        creatorId: profile.creatorId,
+                        name: profile.name,
+                    });
                 }
             }
             if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type !== currentPage)
@@ -1563,16 +1578,27 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
                 'width:100%;max-height:420px;overflow:auto;text-align:left;padding:12px;box-sizing:border-box;font-size:14px';
             const hint = document.createElement('p');
             hint.textContent =
-                '対象を選び、無料・有料と有料投稿の価格範囲を設定してください。初回登録以前の投稿は自動取得しません。';
+                '有料は支援中・支援予定のクリエイターだけオンにし、必要に応じて価格上限を設定してください。閲覧できない有料記事は保留し、約1日ごとに再確認します。初回登録以前の投稿は自動取得しません。';
             manager.append(hint);
-            const status = (stored[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoStatusKey] || {});
+            let status = (stored[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoStatusKey] || {});
             const statusLine = document.createElement('p');
-            const pendingCount = (stored[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoPendingKey] || []).length;
+            let pending = (stored[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoPendingKey] || []);
             const showStatus = (count) => {
-                statusLine.textContent = `登録: ${count}人 / 未処理: ${pendingCount}件 / 前回確認: ${status.lastCheckedAt ? new Date(status.lastCheckedAt).toLocaleString() : '未実施'}${status.lastError ? ` / エラー: ${status.lastError}` : ''}`;
+                const restrictedCount = pending.filter((item) => item.restricted).length;
+                statusLine.textContent = `登録: ${count}人 / 未処理: ${pending.length}件（閲覧制限で保留: ${restrictedCount}件） / 前回確認: ${status.lastCheckedAt ? new Date(status.lastCheckedAt).toLocaleString() : '未実施'}${status.lastError ? ` / エラー: ${status.lastError}` : ''}`;
             };
             showStatus(profiles.length);
             manager.append(statusLine);
+            const retryHint = document.createElement('p');
+            retryHint.textContent =
+                '再加入後は「保留記事を再確認」で待たずに再取得できます。再確認には保存済みの設定を使います。設定変更で対象外になった保留記事は、保存時に対象から外れます。';
+            manager.append(retryHint);
+            const retryUpdates = [];
+            let settingsDirty = false;
+            manager.addEventListener('input', () => {
+                settingsDirty = true;
+                retryUpdates.forEach((update) => update());
+            });
             const addCheckbox = (label, checked) => {
                 const input = document.createElement('input');
                 input.type = 'checkbox';
@@ -1605,7 +1631,7 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
                     return input;
                 };
                 const free = addCheck('無料', saved?.free ?? true);
-                const pay = addCheck('有料', saved?.pay ?? true);
+                const pay = addCheck('有料', saved?.pay ?? false);
                 const addAmount = (label, value) => {
                     const wrap = document.createElement('label');
                     wrap.textContent = `${label} `;
@@ -1622,6 +1648,46 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
                 };
                 const min = addAmount('下限', saved?.minFee ?? null);
                 const max = addAmount('上限', saved?.maxFee ?? null);
+                const retry = document.createElement('button');
+                retry.type = 'button';
+                let retrying = false;
+                const updateRetry = () => {
+                    const profile = profiles.find((item) => item.creatorId === creator.creatorId);
+                    const count = pending.filter((item) => item.creatorId === creator.creatorId &&
+                        item.restricted &&
+                        profile &&
+                        (0,_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.matchesAutoFee)(profile, item.fee)).length;
+                    retry.textContent = `保留記事を再確認（${count}件）`;
+                    retry.disabled = retrying || settingsDirty || count === 0;
+                    retry.title = settingsDirty
+                        ? '先に自動取得の設定を保存してください'
+                        : '';
+                };
+                retryUpdates.push(updateRetry);
+                updateRetry();
+                retry.addEventListener('click', () => {
+                    retrying = true;
+                    updateRetry();
+                    void chrome.runtime
+                        .sendMessage({
+                        msg: 'auto_retry_restricted',
+                        creatorId: creator.creatorId,
+                    })
+                        .then((response) => {
+                        if (typeof response?.count !== 'number') {
+                            throw new Error(response?.error || '再確認の受付を確認できませんでした');
+                        }
+                        window.alert(`${response.count}件を再確認の対象にしました。ほかの記事の処理中やEagleの起動待ちは順次処理します。`);
+                    })
+                        .catch((error) => {
+                        window.alert(`再確認できませんでした: ${error instanceof Error ? error.message : String(error)}`);
+                    })
+                        .finally(() => {
+                        retrying = false;
+                        updateRetry();
+                    });
+                });
+                row.append(document.createElement('br'), retry);
                 manager.append(row);
                 rows.push({
                     creatorId: creator.creatorId,
@@ -1664,11 +1730,28 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
                     });
                 }
                 save.disabled = true;
-                void chrome.storage.local
-                    .set({ [_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoProfilesKey]: next })
-                    .then(() => {
-                    profiles.splice(0, profiles.length, ...next);
-                    showStatus(next.length);
+                settingsDirty = true;
+                retryUpdates.forEach((update) => update());
+                const inputs = rows.flatMap((row) => [
+                    row.enabled,
+                    row.free,
+                    row.pay,
+                    row.min,
+                    row.max,
+                ]);
+                inputs.forEach((input) => {
+                    input.disabled = true;
+                });
+                void chrome.runtime
+                    .sendMessage({ msg: 'auto_save_profiles', profiles: next })
+                    .then((response) => {
+                    if (!Array.isArray(response?.profiles)) {
+                        throw new Error(response?.error || '設定の保存を確認できませんでした');
+                    }
+                    profiles.splice(0, profiles.length, ...response.profiles);
+                    settingsDirty = false;
+                    retryUpdates.forEach((update) => update());
+                    showStatus(profiles.length);
                     void chrome.runtime.sendMessage({ msg: 'auto_check_now' });
                     window.alert('自動取得の設定を保存しました');
                 })
@@ -1677,11 +1760,34 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
                 })
                     .finally(() => {
                     save.disabled = false;
+                    inputs.forEach((input) => {
+                        input.disabled = false;
+                    });
                 });
             });
             manager.append(save);
-            if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type === currentPage)
+            if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type === currentPage) {
+                this.clearAutoManagerListener();
+                this.autoManagerListener = (changes, area) => {
+                    if (area !== 'local')
+                        return;
+                    if (changes[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoPendingKey]) {
+                        pending = (changes[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoPendingKey].newValue ||
+                            []);
+                    }
+                    if (changes[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoStatusKey]) {
+                        status = changes[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoStatusKey].newValue || {};
+                    }
+                    if (changes[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoProfilesKey]) {
+                        profiles.splice(0, profiles.length, ...(changes[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoProfilesKey].newValue ||
+                            []));
+                    }
+                    showStatus(profiles.length);
+                    retryUpdates.forEach((update) => update());
+                };
+                chrome.storage.onChanged.addListener(this.autoManagerListener);
                 slot.append(manager);
+            }
         }
         catch (error) {
             window.alert(`クリエイターを取得できませんでした: ${error instanceof Error ? error.message : String(error)}`);
@@ -2279,6 +2385,7 @@ __webpack_require__.r(__webpack_exports__);
 
 
 class InitPostPage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBase {
+    autoPostDetails;
     autoMessageListener;
     autoEventListeners = [];
     constructor() {
@@ -2298,19 +2405,27 @@ class InitPostPage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
             }
         });
         let active = null;
-        const finish = (success) => {
+        const finish = (result) => {
             if (!active)
                 return;
             const task = active;
             active = null;
             (0,_auto_AutoSession__WEBPACK_IMPORTED_MODULE_10__.setAutoProfile)(null);
-            chrome.runtime.sendMessage({ msg: 'auto_result', ...task, success });
+            chrome.runtime.sendMessage({
+                msg: 'auto_result',
+                ...task,
+                ...this.autoPostDetails,
+                success: result === 'success',
+                skipped: result === 'skipped',
+            });
+            this.autoPostDetails = undefined;
         };
         this.autoEventListeners = [
-            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.downloadComplete, () => finish(true)],
-            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.crawlEmpty, () => finish(true)],
-            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.downloadStop, () => finish(false)],
-            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.downloadPause, () => finish(false)],
+            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.downloadComplete, () => finish('success')],
+            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.crawlEmpty, () => finish('success')],
+            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.downloadStop, () => finish('failure')],
+            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.downloadPause, () => finish('failure')],
+            [_EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.list.autoSkipRestricted, () => finish('skipped')],
         ];
         for (const [event, listener] of this.autoEventListeners) {
             window.addEventListener(event, listener);
@@ -2324,6 +2439,7 @@ class InitPostPage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
                 return;
             }
             const start = () => {
+                this.autoPostDetails = undefined;
                 active = {
                     creatorId: message.profile.creatorId,
                     postId,
@@ -2355,6 +2471,7 @@ class InitPostPage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
             window.removeEventListener(event, listener);
         }
         ;(0,_auto_AutoSession__WEBPACK_IMPORTED_MODULE_10__.setAutoProfile)(null);
+        this.autoPostDetails = undefined;
     }
     nextStep() {
         this.getPostDataThreadNum = 1;
@@ -2365,8 +2482,19 @@ class InitPostPage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
         try {
             const data = await _API__WEBPACK_IMPORTED_MODULE_4__.API.getPost(_utils_Utils__WEBPACK_IMPORTED_MODULE_5__.Utils.getURLPathField(window.location.pathname, 'posts'));
             const post = data.body.post || data.body;
-            if ((0,_auto_AutoSession__WEBPACK_IMPORTED_MODULE_10__.getAutoProfile)() && post.body === null) {
-                throw new Error('この投稿の本文にアクセスできません');
+            const autoProfile = (0,_auto_AutoSession__WEBPACK_IMPORTED_MODULE_10__.getAutoProfile)();
+            if (autoProfile) {
+                this.autoPostDetails = {
+                    creatorName: post.user?.name || autoProfile.name,
+                    postTitle: post.title,
+                };
+                if (post.body === null) {
+                    if (post.feeRequired > 0 && post.isRestricted) {
+                        _EVT__WEBPACK_IMPORTED_MODULE_6__.EVT.fire('autoSkipRestricted');
+                        return;
+                    }
+                    throw new Error('この投稿の本文にアクセスできません');
+                }
             }
             _CrawlInterval__WEBPACK_IMPORTED_MODULE_9__.crawlInterval.addTime();
             await this.fetchAllComments(post);
@@ -7308,9 +7436,9 @@ class ShowSkipCount {
 
 /***/ },
 
-/***/ "./src/ts/download/ShowStatusOnTitle.ts"
+/***/ "./src/ts/download/showStatusOnTitle.ts"
 /*!**********************************************!*\
-  !*** ./src/ts/download/ShowStatusOnTitle.ts ***!
+  !*** ./src/ts/download/showStatusOnTitle.ts ***!
   \**********************************************/
 (__unused_webpack_module, __webpack_exports__, __webpack_require__) {
 
@@ -11414,7 +11542,7 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _Tip__WEBPACK_IMPORTED_MODULE_8___default = /*#__PURE__*/__webpack_require__.n(_Tip__WEBPACK_IMPORTED_MODULE_8__);
 /* harmony import */ var _OutputPanel__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(/*! ./OutputPanel */ "./src/ts/OutputPanel.ts");
 /* harmony import */ var _download_DownloadControl__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(/*! ./download/DownloadControl */ "./src/ts/download/DownloadControl.ts");
-/* harmony import */ var _download_ShowStatusOnTitle__WEBPACK_IMPORTED_MODULE_11__ = __webpack_require__(/*! ./download/ShowStatusOnTitle */ "./src/ts/download/ShowStatusOnTitle.ts");
+/* harmony import */ var _download_showStatusOnTitle__WEBPACK_IMPORTED_MODULE_11__ = __webpack_require__(/*! ./download/showStatusOnTitle */ "./src/ts/download/showStatusOnTitle.ts");
 /* harmony import */ var _download_Resume__WEBPACK_IMPORTED_MODULE_12__ = __webpack_require__(/*! ./download/Resume */ "./src/ts/download/Resume.ts");
 /* harmony import */ var _ShowNotification__WEBPACK_IMPORTED_MODULE_13__ = __webpack_require__(/*! ./ShowNotification */ "./src/ts/ShowNotification.ts");
 /* harmony import */ var _ShowHowToUse__WEBPACK_IMPORTED_MODULE_14__ = __webpack_require__(/*! ./ShowHowToUse */ "./src/ts/ShowHowToUse.ts");

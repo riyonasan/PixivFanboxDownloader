@@ -13,6 +13,7 @@ export interface AutoPendingPost {
   postId: string
   fee: number
   retryAfter?: number
+  restricted?: boolean
 }
 
 export const autoProfilesKey = 'autoCreatorProfiles'

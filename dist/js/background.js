@@ -118,11 +118,21 @@ const totalDownload = new TotalDownload();
 
 __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _AutoTypes__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ./AutoTypes */ "./src/ts/auto/AutoTypes.ts");
+/* harmony import */ var _Ntfy__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ./Ntfy */ "./src/ts/auto/Ntfy.ts");
+
 
 const alarmName = 'fanboxAutoCheck';
+const restrictedRetryMs = 24 * 60 * 60 * 1000;
 let checking = false;
 let starting = false;
 let startAgain = false;
+// Serialize storage read/modify/write operations from scans, results and the UI.
+let stateUpdate = Promise.resolve();
+function updateAutoState(update) {
+    const result = stateUpdate.then(update);
+    stateUpdate = result.catch(() => { });
+    return result;
+}
 async function request(url) {
     const response = await fetch(url, { credentials: 'include' });
     if (!response.ok) {
@@ -193,31 +203,40 @@ async function scanProfiles() {
             const until = Date.now();
             try {
                 const found = await findNewPosts(tabId, profile, until, delayMs);
-                const latest = await chrome.storage.local.get([
-                    _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey,
-                    _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey,
-                ]);
-                const currentProfiles = (latest[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey] ||
-                    []);
-                const current = currentProfiles.find((item) => item.creatorId === profile.creatorId);
-                if (!current)
-                    continue;
-                current.since = until;
-                const pending = (latest[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []);
-                for (const post of found.reverse()) {
-                    if (!pending.some((item) => item.postId === post.postId))
-                        pending.push(post);
-                }
-                await chrome.storage.local.set({
-                    [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey]: currentProfiles,
-                    [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: pending,
-                });
-                const previousStatus = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey);
-                await chrome.storage.local.set({
-                    [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey]: {
-                        ...previousStatus[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey],
-                        lastCheckedAt: Date.now(),
-                    },
+                await updateAutoState(async () => {
+                    const latest = await chrome.storage.local.get([
+                        _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey,
+                        _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey,
+                    ]);
+                    const currentProfiles = (latest[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey] ||
+                        []);
+                    const current = currentProfiles.find((item) => item.creatorId === profile.creatorId);
+                    // Settings may have changed while the request was in flight. Scan
+                    // again with those settings without advancing the old cursor.
+                    if (!current ||
+                        current.since !== profile.since ||
+                        current.free !== profile.free ||
+                        current.pay !== profile.pay ||
+                        current.minFee !== profile.minFee ||
+                        current.maxFee !== profile.maxFee)
+                        return;
+                    current.since = until;
+                    const pending = (latest[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []);
+                    for (const post of found.reverse()) {
+                        if (!pending.some((item) => item.postId === post.postId))
+                            pending.push(post);
+                    }
+                    await chrome.storage.local.set({
+                        [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey]: currentProfiles,
+                        [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: pending,
+                    });
+                    const previousStatus = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey);
+                    await chrome.storage.local.set({
+                        [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey]: {
+                            ...previousStatus[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey],
+                            lastCheckedAt: Date.now(),
+                        },
+                    });
                 });
             }
             catch (error) {
@@ -234,12 +253,14 @@ async function scanProfiles() {
         if (tabId !== undefined) {
             await chrome.tabs.remove(tabId).catch(() => { });
         }
-        const previousStatus = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey);
-        await chrome.storage.local.set({
-            [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey]: {
-                ...previousStatus[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey],
-                lastError: scanError,
-            },
+        await updateAutoState(async () => {
+            const previousStatus = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey);
+            await chrome.storage.local.set({
+                [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey]: {
+                    ...previousStatus[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey],
+                    lastError: scanError,
+                },
+            });
         });
     }
 }
@@ -293,25 +314,27 @@ async function sendStart(active, profile) {
 async function startNextPostInternal() {
     if (await clearStaleActive())
         return;
-    const stored = await chrome.storage.local.get([
-        _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey,
-        _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey,
-        'fanboxSetting',
-    ]);
-    const profiles = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey] || []);
-    const pending = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []);
-    const remaining = pending.filter((item) => {
-        const profile = profiles.find((value) => value.creatorId === item.creatorId);
-        return profile && (0,_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.matchesAutoFee)(profile, item.fee);
+    const { remaining, settings } = await updateAutoState(async () => {
+        const stored = await chrome.storage.local.get([
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey,
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey,
+            'fanboxSetting',
+        ]);
+        const profiles = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey] || []);
+        const pending = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []);
+        const remaining = pending.filter((item) => {
+            const profile = profiles.find((value) => value.creatorId === item.creatorId);
+            return profile && (0,_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.matchesAutoFee)(profile, item.fee);
+        });
+        if (remaining.length !== pending.length) {
+            await chrome.storage.local.set({ [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: remaining });
+        }
+        return { remaining, settings: stored.fanboxSetting };
     });
-    if (remaining.length !== pending.length) {
-        await chrome.storage.local.set({ [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: remaining });
-    }
     const task = remaining.find((item) => !item.retryAfter || item.retryAfter <= Date.now());
     if (!task)
         return;
-    const profile = profiles.find((item) => item.creatorId === task.creatorId);
-    const currentSettings = stored.fanboxSetting;
+    const currentSettings = settings;
     if (currentSettings?.saveToEagle) {
         try {
             await request('http://localhost:41595/api/application/info');
@@ -321,14 +344,39 @@ async function startNextPostInternal() {
             return;
         }
     }
-    const tab = await chrome.tabs.create({
-        url: `https://www.fanbox.cc/@${encodeURIComponent(task.creatorId)}/posts/${encodeURIComponent(task.postId)}`,
-        active: false,
+    // Eagle can take time to respond. Recheck saved settings before opening
+    // a post, so disabling paid posts while waiting takes effect immediately.
+    const next = await updateAutoState(async () => {
+        const latest = await chrome.storage.local.get([
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey,
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey,
+        ]);
+        const profile = (latest[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey] || []).find((item) => item.creatorId === task.creatorId);
+        const current = (latest[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []).find((item) => item.postId === task.postId);
+        if (!profile ||
+            !current ||
+            !(0,_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.matchesAutoFee)(profile, current.fee) ||
+            (current.retryAfter && current.retryAfter > Date.now())) {
+            startAgain = true;
+            return;
+        }
+        const tab = await chrome.tabs.create({
+            url: `https://www.fanbox.cc/@${encodeURIComponent(current.creatorId)}/posts/${encodeURIComponent(current.postId)}`,
+            active: false,
+        });
+        if (tab.id === undefined)
+            throw new Error('Automatic post tab has no ID');
+        const active = {
+            tabId: tab.id,
+            task: current,
+            startedAt: Date.now(),
+        };
+        await chrome.storage.local.set({ [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoActiveKey]: active });
+        return { active, profile };
     });
-    if (tab.id === undefined)
-        throw new Error('Automatic post tab has no ID');
-    const active = { tabId: tab.id, task, startedAt: Date.now() };
-    await chrome.storage.local.set({ [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoActiveKey]: active });
+    if (!next)
+        return;
+    const { active, profile } = next;
     try {
         await sendStart(active, profile);
     }
@@ -343,6 +391,7 @@ async function startNextPostInternal() {
             },
         });
         console.error('Automatic FANBOX post could not start', error);
+        await (0,_Ntfy__WEBPACK_IMPORTED_MODULE_1__.notifyAutoPost)(task, false).catch((notificationError) => console.warn('Automatic FANBOX notification failed', notificationError));
     }
 }
 async function startNextPost() {
@@ -378,43 +427,128 @@ async function runAutoCheck() {
     }
 }
 async function finishPost(message) {
-    const active = await getActive();
-    if (!active ||
-        active.task.creatorId !== message.creatorId ||
-        active.task.postId !== message.postId ||
-        active.startedAt !== message.startedAt)
+    const active = await updateAutoState(async () => {
+        const active = await getActive();
+        if (!active ||
+            active.task.creatorId !== message.creatorId ||
+            active.task.postId !== message.postId ||
+            active.startedAt !== message.startedAt)
+            return;
+        const stored = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey);
+        const pending = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []);
+        await chrome.storage.local.set({
+            [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: message.success && !message.skipped
+                ? pending.filter((item) => item.postId !== message.postId)
+                : pending.map((item) => item.postId === message.postId
+                    ? {
+                        ...item,
+                        restricted: !!message.skipped,
+                        retryAfter: Date.now() +
+                            (message.skipped ? restrictedRetryMs : 60 * 60 * 1000),
+                    }
+                    : item),
+        });
+        const previousStatus = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey);
+        const status = (previousStatus[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey] || {});
+        await chrome.storage.local.set({
+            [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey]: {
+                ...status,
+                ...(message.skipped
+                    ? {
+                        lastError: status.lastError?.startsWith(`${message.creatorId}:`)
+                            ? ''
+                            : status.lastError,
+                    }
+                    : message.success
+                        ? { lastCompletedAt: Date.now(), lastError: '' }
+                        : {
+                            lastError: `${message.creatorId}: 取り込みに失敗しました。次回再試行します。`,
+                        }),
+            },
+        });
+        await chrome.storage.local.remove(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoActiveKey);
+        return active;
+    });
+    if (!active)
         return;
-    const stored = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey);
-    const pending = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []);
-    await chrome.storage.local.set({
-        [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: message.success
-            ? pending.filter((item) => item.postId !== message.postId)
-            : pending.map((item) => item.postId === message.postId
-                ? { ...item, retryAfter: Date.now() + 60 * 60 * 1000 }
-                : item),
-    });
-    const previousStatus = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey);
-    await chrome.storage.local.set({
-        [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey]: {
-            ...previousStatus[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey],
-            ...(message.success
-                ? { lastCompletedAt: Date.now(), lastError: '' }
-                : {
-                    lastError: `${message.creatorId}: 取り込みに失敗しました。次回再試行します。`,
-                }),
-        },
-    });
-    await chrome.storage.local.remove(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoActiveKey);
     await new Promise((resolve) => setTimeout(resolve, 1000));
     await chrome.tabs.remove(active.tabId).catch(() => { });
+    if (!message.skipped) {
+        await (0,_Ntfy__WEBPACK_IMPORTED_MODULE_1__.notifyAutoPost)(active.task, message.success, message).catch((error) => console.warn('Automatic FANBOX notification failed', error));
+    }
     void startNextPost().catch((error) => console.error('Automatic FANBOX import failed', error));
 }
-chrome.runtime.onMessage.addListener((message) => {
+async function retryRestrictedPosts(creatorId) {
+    const count = await updateAutoState(async () => {
+        const stored = await chrome.storage.local.get([
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey,
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey,
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoActiveKey,
+        ]);
+        const profiles = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey] || []);
+        const profile = profiles.find((item) => item.creatorId === creatorId);
+        const active = stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoActiveKey];
+        let count = 0;
+        const pending = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []).map((item) => {
+            if (item.creatorId === creatorId &&
+                item.restricted &&
+                profile &&
+                (0,_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.matchesAutoFee)(profile, item.fee) &&
+                active?.task.postId !== item.postId) {
+                count++;
+                return { ...item, retryAfter: 0 };
+            }
+            return item;
+        });
+        await chrome.storage.local.set({ [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: pending });
+        return count;
+    });
+    void startNextPost().catch((error) => console.error('Automatic FANBOX retry failed', error));
+    return count;
+}
+async function saveProfiles(profiles) {
+    return updateAutoState(async () => {
+        const stored = await chrome.storage.local.get([
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey,
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey,
+        ]);
+        const previous = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey] || []);
+        const next = profiles.map((profile) => ({
+            ...profile,
+            since: previous.find((item) => item.creatorId === profile.creatorId)?.since ??
+                Date.now(),
+        }));
+        const pending = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []).filter((item) => {
+            const profile = next.find((value) => value.creatorId === item.creatorId);
+            return profile && (0,_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.matchesAutoFee)(profile, item.fee);
+        });
+        await chrome.storage.local.set({
+            [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey]: next,
+            [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: pending,
+        });
+        return next;
+    });
+}
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.msg === 'auto_result') {
         void finishPost(message).catch((error) => console.error('Automatic FANBOX result could not be saved', error));
     }
     else if (message.msg === 'auto_check_now') {
         void runAutoCheck();
+    }
+    else if (message.msg === 'auto_retry_restricted' &&
+        typeof message.creatorId === 'string') {
+        void retryRestrictedPosts(message.creatorId)
+            .then((count) => sendResponse({ count }))
+            .catch((error) => sendResponse({ error: String(error) }));
+        return true;
+    }
+    else if (message.msg === 'auto_save_profiles' &&
+        Array.isArray(message.profiles)) {
+        void saveProfiles(message.profiles)
+            .then((profiles) => sendResponse({ profiles }))
+            .catch((error) => sendResponse({ error: String(error) }));
+        return true;
     }
 });
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -462,6 +596,57 @@ function matchesAutoFee(profile, fee) {
     return (profile.pay &&
         (profile.minFee === null || fee >= profile.minFee) &&
         (profile.maxFee === null || fee <= profile.maxFee));
+}
+
+
+/***/ },
+
+/***/ "./src/ts/auto/Ntfy.ts"
+/*!*****************************!*\
+  !*** ./src/ts/auto/Ntfy.ts ***!
+  \*****************************/
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   notifyAutoPost: () => (/* binding */ notifyAutoPost)
+/* harmony export */ });
+let configuredURL;
+function getNtfyURL() {
+    configuredURL ??= fetch(chrome.runtime.getURL('ntfy-config.json'))
+        .then(async (response) => {
+        if (!response.ok)
+            throw new Error(`Notification config: HTTP ${response.status}`);
+        const config = (await response.json());
+        return typeof config.url === 'string' && config.url ? config.url : null;
+    });
+    return configuredURL;
+}
+async function notifyAutoPost(task, success, details) {
+    const url = await getNtfyURL();
+    if (!url)
+        return;
+    const postURL = `https://www.fanbox.cc/@${encodeURIComponent(task.creatorId)}/posts/${encodeURIComponent(task.postId)}`;
+    if (success && (!details?.creatorName || !details.postTitle)) {
+        throw new Error('FANBOX post notification is missing its name or title');
+    }
+    const headers = {
+        'Content-Type': 'text/plain; charset=utf-8',
+        Click: postURL,
+    };
+    if (!success)
+        headers.Title = 'FANBOX auto task failed';
+    const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: success
+            ? `${details.creatorName}\n${details.postTitle}\n${postURL}`
+            : `${task.creatorId}: 自動取得に失敗しました。次回再試行します。\n${postURL}`,
+        credentials: 'omit',
+        signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok)
+        throw new Error(`ntfy request failed (HTTP ${response.status})`);
 }
 
 
