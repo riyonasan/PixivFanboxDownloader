@@ -2,6 +2,7 @@
   "name": "Pixiv Fanbox Downloader",
   "version": "5.0.0",
   "manifest_version": 3,
+  "options_page": "spool-proof.html",
   "description": "Pixiv Fanbox 批量下载器。Pixiv Fanbox batch downloader.",
   "icons": {
     "16": "icon/logo16.png",
@@ -37,6 +38,7 @@
   "host_permissions": [
     "*://*.fanbox.cc/*",
     "http://localhost:41595/*",
+    "http://127.0.0.1:18096/*",
     "https://ntfy.sh/*"
   ],
   "web_accessible_resources": [

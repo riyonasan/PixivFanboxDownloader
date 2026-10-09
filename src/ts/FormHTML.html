@@ -1,4 +1,13 @@
 <form class="settingForm">
+  <details class="option">
+    <summary>ミニPCへ1件保存（実証）</summary>
+    <p>投稿の添付ファイル1件を保存します。Eagle登録・自動取得の切り替えは行いません。</p>
+    <button type="button" id="spoolProofOptions">接続設定</button>
+    <button type="button" id="spoolProofList">この投稿の添付ファイルを読む</button>
+    <select id="spoolProofFile" aria-label="保存実証する添付ファイル"></select>
+    <button type="button" id="spoolProofSave" disabled>選択した1件を保存</button>
+    <output id="spoolProofStatus" aria-live="polite" style="display:block;white-space:pre-wrap;overflow-wrap:anywhere"></output>
+  </details>
   <p class="option" data-no="62">
     <span class="settingNameStyle1" data-xztext="_保存先"></span>
 

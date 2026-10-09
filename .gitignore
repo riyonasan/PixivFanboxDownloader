@@ -32,3 +32,8 @@ _metadata
 .env.*
 !.env.example
 dist/ntfy-config.json
+
+# Local FANBOX proof files, database and secrets
+services/spool_proof/data/
+services/spool_proof/secrets/
+services/spool_proof/__pycache__/
