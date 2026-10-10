@@ -38,12 +38,13 @@ def digest(path):
 
 
 class Storage:
-    def __init__(self, root, min_free=MIN_FREE):
+    def __init__(self, root, min_free=MIN_FREE, max_file=MAX_FILE):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.objects = self.root / "objects"
         self.objects.mkdir(exist_ok=True, mode=0o700)
         self.min_free = min_free
+        self.max_file = max_file
         self.db = sqlite3.connect(self.root / "receipts.sqlite3")
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA synchronous=FULL")
@@ -97,8 +98,8 @@ class Storage:
             raise Rejected("Invalid file ID")
         if not isinstance(name, str) or not 1 <= len(name) <= 512 or any(ord(c) < 32 for c in name):
             raise Rejected("Invalid file name")
-        if size is not None and (type(size) is not int or not 0 <= size <= MAX_FILE):
-            raise Rejected("The proof accepts files up to 64 MiB", 413)
+        if size is not None and (type(size) is not int or not 0 <= size <= self.max_file):
+            raise Rejected("File exceeds the configured size limit", 413)
         key = hashlib.sha256((post + "\0" + file_id).encode()).hexdigest()
         row = self.db.execute("SELECT * FROM receipts WHERE key=?", (key,)).fetchone()
         if row is not None:
@@ -106,7 +107,7 @@ class Storage:
                 raise Rejected("The same file ID has conflicting metadata", 409)
             if row["state"] in ("saved", "committing"):
                 return self.recover(row)
-        self.check_space(size if size is not None else MAX_FILE)
+        self.check_space(size if size is not None else CHUNK)
         upload_id = uuid.uuid4().hex
         # Commit the new session first: an interrupted restart invalidates old senders.
         with self.db:
@@ -118,7 +119,7 @@ class Storage:
             stream.flush()
             os.fsync(stream.fileno())
         sync_directory(self.objects)
-        return {"state": "uploading", "uploadId": upload_id, "chunkSize": CHUNK, "maxSize": MAX_FILE}
+        return {"state": "uploading", "uploadId": upload_id, "chunkSize": CHUNK, "maxSize": self.max_file}
 
     def append(self, upload_id, offset, content):
         row = self.row(upload_id)
@@ -127,7 +128,7 @@ class Storage:
         if type(offset) is not int or offset < 0 or not 0 < len(content) <= CHUNK:
             raise Rejected("Invalid chunk")
         end = offset + len(content)
-        if end > MAX_FILE or (row["expected_size"] is not None and end > row["expected_size"]):
+        if end > self.max_file or (row["expected_size"] is not None and end > row["expected_size"]):
             raise Rejected("File exceeds its permitted size", 413)
         part, _ = self.paths(row["key"])
         current = part.stat().st_size
@@ -153,7 +154,7 @@ class Storage:
                 raise Rejected("Conflicting committed size", 409)
             return self.recover(row)
         part, _ = self.paths(row["key"])
-        if type(size) is not int or not 0 <= size <= MAX_FILE or part.stat().st_size != size:
+        if type(size) is not int or not 0 <= size <= self.max_file or part.stat().st_size != size:
             raise Rejected("Incomplete upload", 409)
         if row["expected_size"] is not None and size != row["expected_size"]:
             raise Rejected("File size does not match metadata", 409)
@@ -169,6 +170,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *_):
         pass  # Never log headers, tokens or file metadata.
+
+    def extra_request(self, path, content):
+        return None
+
+    def origin_allowed(self, origin):
+        return origin in (None, "chrome-extension://" + self.server.extension_id)
 
     def reply(self, status, value):
         payload = json.dumps(value, ensure_ascii=False).encode()
@@ -187,11 +194,16 @@ class Handler(BaseHTTPRequestHandler):
             if not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + self.server.token):
                 raise Rejected("Unauthorized", 401)
             # No CORS: requests must come from the extension service worker.
-            if self.headers.get("Origin") not in (None, "chrome-extension://" + self.server.extension_id):
+            if not self.origin_allowed(self.headers.get("Origin")):
                 raise Rejected("Origin is not allowed", 403)
             if self.headers.get("Transfer-Encoding"):
                 raise Rejected("Content-Length is required", 411)
             path = urlsplit(self.path).path
+            if self.command == "GET":
+                extra = self.extra_request(path, b"")
+                if extra is not None:
+                    self.reply(200, extra)
+                    return
             if self.command == "GET" and path == "/v1/health":
                 self.reply(200, {"mode": "file-proof", "eagleEnabled": False, "maxSize": MAX_FILE})
                 return
@@ -201,12 +213,16 @@ class Handler(BaseHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length", "-1"))
             except ValueError:
                 raise Rejected("Invalid Content-Length")
-            limit = CHUNK if self.command == "PUT" else 4096
+            limit = CHUNK if self.command == "PUT" else getattr(self.server, 'metadata_limit', 4096)
             if not 0 <= length <= limit:
                 raise Rejected("Request is too large or has no length", 413)
             content = self.rfile.read(length)
             if len(content) != length:
                 raise Rejected("Incomplete request body")
+            extra = self.extra_request(path, content)
+            if extra is not None:
+                self.reply(200, extra)
+                return
             if self.command == "POST" and path == "/v1/uploads":
                 result = self.server.storage.begin(json.loads(content))
             elif match := re.fullmatch(r"/v1/uploads/([a-f0-9]{32})(/commit)?", path):

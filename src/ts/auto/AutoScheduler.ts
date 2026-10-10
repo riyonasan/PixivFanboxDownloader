@@ -9,6 +9,7 @@ import {
   matchesAutoFee,
 } from './AutoTypes'
 import { notifyAutoPost } from './Ntfy'
+import { canStartSpoolCollection, prepareSpoolCollection } from '../spool/SpoolRuntime'
 
 interface ActivePost {
   tabId: number
@@ -195,6 +196,7 @@ async function sendStart(active: ActivePost, profile: AutoCreatorProfile) {
 }
 
 async function startNextPostInternal() {
+  if (!(await canStartSpoolCollection())) return
   if (await clearStaleActive()) return
   const stored = await chrome.storage.local.get([
     autoProfilesKey,
@@ -274,6 +276,7 @@ async function runAutoCheck() {
   if (checking) return
   checking = true
   try {
+    if (!(await prepareSpoolCollection())) return
     await scanProfiles()
     await startNextPost()
   } catch (error) {

@@ -91,13 +91,15 @@ class DownloadControl {
       if (!this.taskBatch) {
         return
       }
+      if (msg.data?.source === 'spool' && msg.data.taskBatch !== this.taskBatch) return
 
       if (msg.msg === 'eagle_error') {
         const error = msg.err || 'unknown error'
-        log.error(`Eagle registration failed: ${error}`)
+        const prefix = settings.saveToSpool ? 'ミニPCへの保存に失敗しました' : 'Eagle registration failed'
+        log.error(`${prefix}: ${error}`)
         msgBox.once(
           'eagleError',
-          `Eagle registration failed: ${Tools.escapeHtml(error)}`,
+          `${prefix}: ${Tools.escapeHtml(error)}`,
           'error',
         )
         this.stopDownload()
@@ -163,10 +165,10 @@ class DownloadControl {
     })
 
     window.addEventListener(EVT.list.downloadComplete, () => {
-      const completeText = this.saveToEagle
+      const completeText = settings.saveToSpool ? 'ミニPCへの保存受付完了（Eagle登録は状態一覧で確認）' : this.saveToEagle
         ? lang.transl('_Eagle登録受付完了')
         : lang.transl('_下载完毕2')
-      const completeLog = this.saveToEagle
+      const completeLog = settings.saveToSpool ? 'ミニPCへの保存受付完了（Eagle登録は状態一覧で確認）' : this.saveToEagle
         ? lang.transl('_Eagle登録受付完了')
         : lang.transl('_下载完毕')
       this.setDownStateText(completeText, Colors.textSuccess)
@@ -531,7 +533,7 @@ class DownloadControl {
               await createHtmlDocument.create(
                 result.htmlData!,
                 resultMeta,
-                saveToEagle,
+                saveToEagle || settings.saveToSpool,
               ),
             ]
             result.ext = 'html'

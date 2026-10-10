@@ -1,3 +1,4 @@
+import './SpoolPanel'
 import { API } from '../API'
 import { PostBody } from '../CrawlResult.d'
 import { ProofFile, SavedReceipt } from './SpoolClient'

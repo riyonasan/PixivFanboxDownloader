@@ -2,6 +2,7 @@
   "name": "Pixiv Fanbox Downloader",
   "version": "5.0.0",
   "manifest_version": 3,
+  "options_page": "spool-proof.html",
   "description": "Pixiv Fanbox 批量下载器。Pixiv Fanbox batch downloader.",
   "icons": {
     "16": "icon/logo16.png",
@@ -20,9 +21,16 @@
   },
   "content_scripts": [
     {
-      "css": ["style/style.css"],
-      "js": ["js/content.js", "lib/iconfont.js"],
-      "matches": ["*://*.fanbox.cc/*"],
+      "css": [
+        "style/style.css"
+      ],
+      "js": [
+        "js/content.js",
+        "lib/iconfont.js"
+      ],
+      "matches": [
+        "*://*.fanbox.cc/*"
+      ],
       "run_at": "document_end"
     }
   ],
@@ -37,7 +45,9 @@
   "host_permissions": [
     "*://*.fanbox.cc/*",
     "http://localhost:41595/*",
-    "https://ntfy.sh/*"
+    "http://127.0.0.1:18096/*",
+    "https://ntfy.sh/*",
+    "https://pixiv.pximg.net/*"
   ],
   "web_accessible_resources": [
     {
@@ -46,9 +56,14 @@
         "icon/logo128.png",
         "images/cardMask.png"
       ],
-      "matches": ["*://*.fanbox.cc/*"]
+      "matches": [
+        "*://*.fanbox.cc/*"
+      ]
     }
   ],
   "incognito": "split",
-  "homepage_url": "https://github.com/xuejianxianzun/PixivFanboxDownloader"
+  "homepage_url": "https://github.com/xuejianxianzun/PixivFanboxDownloader",
+  "optional_host_permissions": [
+    "http://*/*"
+  ]
 }

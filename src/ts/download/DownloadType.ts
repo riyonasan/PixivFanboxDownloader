@@ -30,8 +30,9 @@ export interface DonwloadSuccessData {
   tabId: number
   uuid: boolean
   size: number
-  source?: 'eagle'
+  source?: 'eagle' | 'spool'
   recordKey?: string
+  taskBatch?: number
 }
 
 export interface DonwloadSkipData {

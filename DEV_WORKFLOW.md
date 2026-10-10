@@ -23,11 +23,11 @@ remoteに認証情報が含まれる場合は表示せず、ホストとリポ�
 TypeScript、webpack、Node.jsを利用する。新cloneでは`npm install`で依存を導入する。lockfileは現行運用でGit除外されており、有効なローカル`package-lock.json`がある環境では`npm ci`も使える。テンプレート導入だけを理由に追跡方針は変えない。実証サービスはPython 3.11以上の標準ライブラリのみで動く。既存`.env.example`は通知用`NTFY_URL`の例であり、新しい環境変数は追加しない。
 
 ```text
-node --test tests/spool-proof.cjs
-python -B -m unittest discover -s services/spool_proof -p test_service.py -v
+node --test tests/spool-proof.cjs tests/spool-runtime.cjs
+python -B -m unittest discover -s services/spool_proof -p "test_*.py" -v
 ```
 
-`tests/auto-scheduler.cjs`がローカルに存在する場合は`node --test tests/auto-scheduler.cjs`も使える。現時点では別作業の未追跡ファイルなので、cloneしただけで利用可能とは扱わない。
+`tests/auto-scheduler.cjs`は別作業の未追跡ファイルで、cloneしただけで利用可能とは扱わない。既存13件は新しいSpoolRuntime依存だけを通常動作用のstubに置き換えた外部fixtureで検証した。元ファイルは保護しており、直接実行するにはその依存fixtureの追加が必要。新しい追跡対象のテストは上記コマンドだけで動く。Linuxを補助サービスの実行対象とし、HTTPを含むPython試験もLinuxで確認する。
 
 既存の`dist/js`を保護するビルド例（PowerShell）:
 

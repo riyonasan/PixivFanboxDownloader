@@ -65,6 +65,35 @@ class Download {
   // 下载文件
   private async download(arg: downloadArgument) {
     this.fileName = fileName.getFileName(arg.data)
+    if (settings.saveToSpool) {
+      await downloadInterval.wait()
+      this.setProgressBar(0, 0)
+      try {
+        const result = arg.data
+        const generated = 'text' in result
+        const image = ['jpg','jpeg','png','gif','bmp','webp'].includes(result.ext.toLowerCase())
+        const fileId = generated ? `file:text-${result.ext}`
+          : `${image ? 'image' : 'file'}:${result.index === 0 ? 'cover' : result.fileID}`
+        const response = await chrome.runtime.sendMessage({
+          msg: 'spool_save', id: arg.id, taskBatch: arg.taskBatch, originalURL: result.url,
+          file: {
+            postId: result.postId, fileId,
+            fileName: generated ? `text.${result.ext}` : image ? `${result.postId}-${result.index === 0 ? 'cover' : result.fileID}.${result.ext}` : `${result.name}.${result.ext}`,
+            expectedSize: result.size, url: generated ? await this.getEagleURL(result.url) : result.url,
+            registration: {
+              fileName: this.fileName,
+              website: `https://www.fanbox.cc/@${encodeURIComponent(result.createID)}/posts/${encodeURIComponent(result.postId)}`,
+              tags: result.tags ? result.tags.split(',').filter(Boolean) : [],
+            },
+          },
+        })
+        if (!response?.receipt || response.error) throw new Error(response?.error || '保存確認が返りませんでした')
+        log.success(`ミニPCへ保存済み / Eagle${response.receipt.eagleState === 'done' ? '登録済み' : '登録待ち'}: ${this.fileName}`)
+      } catch (error) {
+        this.eagleError(arg.data.url, arg.id, arg.taskBatch, error)
+      }
+      return
+    }
 
     // 检查是否是重复文件
     const url = arg.data.url

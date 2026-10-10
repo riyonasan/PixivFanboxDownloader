@@ -28,11 +28,11 @@ function harness(options = {}) {
       if (url === 'chrome-extension://test/spool-proof-local.json') {
         return { ok: !options.noProvisioning, json: async () => ({ token: options.badToken || 't'.repeat(40) }) }
       }
-      if (url === file.url) {
+      if (url === (options.sourceURL || file.url)) {
         if (options.sourceError) throw new Error('source failure')
         const data = options.bytes || new Uint8Array([1, 2, 3, 4, 5])
         let read = false
-        return { ok: true, status: 200, headers: { get: (name) => name === 'content-type'
+        return { ok: !options.sourceStatus || options.sourceStatus === 200, status: options.sourceStatus || 200, headers: { get: (name) => name === 'content-type'
           ? (options.mime || 'application/octet-stream') : (options.noLength ? null : String(data.length)) },
           body: { cancel: async () => {}, getReader: () => ({ read: async () => {
             if (read) return { done: true }
@@ -46,10 +46,12 @@ function harness(options = {}) {
       if (options.offline) throw new Error('offline')
       if (url.endsWith('/v1/uploads')) {
         const metadata = JSON.parse(init.body)
-        assert.deepEqual(Object.keys(metadata).sort(), ['expectedSize', 'fileId', 'fileName', 'postId'])
-        assert.ok(!init.body.includes('https:'))
+        assert.deepEqual(Object.keys(metadata).sort(), options.production
+          ? ['expectedSize', 'fileId', 'fileName', 'postId', 'registration'] : ['expectedSize', 'fileId', 'fileName', 'postId'])
+        assert.ok(!init.body.includes('downloads.fanbox.cc'))
+        offset = 0
         return { ok: true, json: async () => options.duplicate ||
-          { state: 'uploading', uploadId, chunkSize: 1048576, maxSize: 67108864 } }
+          { state: 'uploading', uploadId, chunkSize: 1048576, maxSize: options.production ? 2 ** 40 : 67108864 } }
       }
       if (init.method === 'PUT') {
         assert.equal(Number(init.headers['X-Offset']), offset)
@@ -60,11 +62,101 @@ function harness(options = {}) {
       assert.ok(url.endsWith('/commit'))
       const size = JSON.parse(init.body).size
       assert.equal(size, offset)
-      return { ok: true, json: async () => options.badReceipt || { ...receipt, size } }
+      return { ok: true, json: async () => options.badReceipt || { ...receipt, size, eagleState: options.production ? 'pending' : receipt.eagleState } }
     } }
   vm.runInNewContext(code, context)
-  return { save: context.exports.saveProofFile, calls, persisted }
+  return { save: context.exports.saveProofFile, spool: context.exports.saveSpoolFile, calls, persisted }
 }
+
+const productionFile = () => ({ ...file, registration: { fileName:'FANBOX/作者/投稿-001.png', website:'https://www.fanbox.cc/@creator/posts/123', tags:[] } })
+test('FIFO receipt means saved and pending; authenticated browser fetch never calls Eagle', async () => {
+  const h = harness({production:true})
+  const sizes = []
+  assert.equal((await h.spool(productionFile(),async size=>{sizes.push(size)})).eagleState,'pending')
+  assert.deepEqual(sizes,[5])
+  assert.ok(h.calls.every(call => !call.url.includes('41595')))
+  assert.equal(h.calls.find(call => call.url === file.url).init.credentials,'include')
+})
+
+test('production cover uses the existing pixiv CDN with matching post and manifest permission', async () => {
+  const sourceURL='https://pixiv.pximg.net/fanbox/public/images/post/123/cover/abc.jpeg'
+  const h=harness({production:true,sourceURL,mime:'image/jpeg'})
+  await h.spool({...productionFile(),fileId:'image:cover',url:sourceURL})
+  assert.equal(h.calls.find(call=>call.url===sourceURL).init.credentials,'include')
+  for(const name of ['src','dist']) {
+    const manifest=JSON.parse(fs.readFileSync(path.join(__dirname,`../${name}/manifest.json`),'utf8'))
+    assert.ok(manifest.host_permissions.includes('https://pixiv.pximg.net/*'))
+  }
+})
+
+test('cover allowance rejects other posts, other CDN paths and ordinary attachments', async () => {
+  const sourceURL='https://pixiv.pximg.net/fanbox/public/images/post/123/cover/abc.jpeg'
+  for(const changes of [
+    {postId:'124'}, {fileId:'image:abc'},
+    {url:'https://pixiv.pximg.net/unrelated/abc.jpeg'},
+    {url:'https://pixiv.pximg.net/fanbox/public/images/post/123/cover/abc.jpeg?other=1'},
+  ]) {
+    const h=harness({production:true,sourceURL})
+    await assert.rejects(h.spool({...productionFile(),fileId:'image:cover',url:sourceURL,...changes}))
+    assert.equal(h.calls.length,0)
+  }
+})
+
+test('background adds newly fetched bytes to the existing daily total before save success', async () => {
+  const background=ts.transpileModule(fs.readFileSync(path.join(__dirname,'../src/ts/spool/SpoolBackground.ts'),'utf8'),{
+    compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022},
+  }).outputText
+  let listener
+  let duplicate=false
+  const totals=[]
+  const messages=[]
+  const dependencies={
+    './SpoolClient':{SpoolAuthError:class extends Error{},saveSpoolFile:async(_file,fetched)=>{
+      if(!duplicate) await fetched(5)
+      return {...receipt,eagleState:'done'}
+    }},
+    './SpoolRuntime':{localSpoolConfig:async()=>({role:'collector'}),notifySpoolAuthentication:async()=>{}},
+    '../TotalDownload':{totalDownload:{addDownload:bytes=>totals.push(bytes)}},
+  }
+  vm.runInNewContext(background,{exports:{},URL,require:name=>dependencies[name],chrome:{
+    runtime:{id:'extension',onMessage:{addListener:fn=>{listener=fn}}},
+    storage:{local:{get:async()=>({spoolCollectionEnabled:true})}},
+    tabs:{sendMessage:async(_id,message)=>messages.push(message)},
+  }})
+  const save=()=>new Promise(resolve=>assert.equal(listener({msg:'spool_save',file:productionFile(),id:'abc',taskBatch:1,originalURL:file.url},
+    {id:'extension',frameId:0,tab:{id:9},url:'https://www.fanbox.cc/@creator/posts/123'},resolve),true))
+  assert.ok((await save()).receipt)
+  duplicate=true
+  assert.ok((await save()).receipt)
+  assert.deepEqual(totals,[5])
+  assert.equal(messages.length,2)
+})
+test('simultaneous download threads are serialized without losing either save', async () => {
+  const h = harness({production:true})
+  const result = await Promise.all([h.spool(productionFile()),h.spool(productionFile())])
+  assert.equal(result.length,2)
+  assert.equal(h.calls.filter(call => call.url.endsWith('/commit')).length,2)
+})
+test('saved duplicate does not report authentication recovery without fetching', async () => {
+  const h = harness({production:true,duplicate:{...receipt,eagleState:'done'}})
+  let authenticated = 0
+  assert.equal((await h.spool(productionFile(),async()=>{authenticated++})).eagleState,'done')
+  assert.equal(authenticated,0)
+  assert.equal(h.calls.length,1)
+})
+test('authentication rejection cannot become a saved receipt', async () => {
+  const h = harness({production:true,sourceStatus:403})
+  await assert.rejects(h.spool(productionFile()),/認証/)
+  assert.ok(h.calls.every(call=>!call.url.endsWith('/commit')))
+})
+test('generated text has a stable typed file ID and browser-owned data URL', async () => {
+  const sourceURL = 'data:text/plain;charset=utf-8;base64,aGVsbG8='
+  const h = harness({production:true,sourceURL})
+  await h.spool({...productionFile(),fileId:'file:text-txt',url:sourceURL})
+  const sent = JSON.parse(h.calls.find(call=>call.url.endsWith('/v1/uploads')).init.body)
+  assert.equal(sent.fileId,'file:text-txt')
+  assert.ok(!JSON.stringify(sent).includes('aGVsbG8'))
+})
 
 test('authenticated source fetch and separate durable receipt without source URL transmission', async () => {
   const h = harness()
@@ -168,6 +260,7 @@ function panelHarness(data) {
   const location = { pathname: '/@creator/posts/123' }
   vm.runInNewContext(panelCode, { exports: {}, location,
     require(name) {
+      if (name === './SpoolPanel') return {}
       assert.equal(name, '../API')
       return { API: { getPost: async () => data } }
     },

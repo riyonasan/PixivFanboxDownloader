@@ -1,9 +1,11 @@
 <!doctype html>
-<html lang="ja"><head><meta charset="utf-8"><title>FANBOX 1件保存の実証設定</title></head>
-<body><h1>FANBOX 1件保存の実証設定</h1>
-<p>専用Chromiumと同じPCの補助サービス（127.0.0.1:18096）だけに接続します。Eagle登録は行いません。</p>
+<html lang="ja"><head><meta charset="utf-8"><title>FANBOX ミニPC接続設定</title></head>
+<body><h1>FANBOX ミニPC接続設定</h1>
+<p>ファイル受付は専用Chromiumと同じPC（127.0.0.1:18096）だけで行います。メインPCからは設定反映と状態確認を利用できます。</p>
 <p>拡張機能ID: <code id="extensionId"></code></p>
-<form id="config"><label>補助サービスのAPIトークン <input id="token" type="password" autocomplete="off" required minlength="32" maxlength="128"></label>
+<form id="config"><label>補助サービスのAPIトークン（変更時のみ） <input id="token" type="password" autocomplete="off" minlength="32" maxlength="128"></label>
+<p><label>ミニPCの接続先 <input id="remote" type="url" placeholder="http://100.x.x.x:18096"></label>（メインPCの設定反映・状態確認用）</p>
+<p id="collector" hidden><label><input id="enabled" type="checkbox">この専用環境で収集を有効にする</label><br>本移行のバックアップと旧側停止が完了してから有効にしてください。</p>
 <button type="submit">保存</button></form>
 <p>トークンは一般設定のエクスポートには含めません。Cookieは入力しないでください。</p>
 <output id="status" aria-live="polite"></output><script src="spool-proof-options.js"></script></body></html>
