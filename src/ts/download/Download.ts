@@ -71,7 +71,8 @@ class Download {
       try {
         const result = arg.data
         const generated = 'text' in result
-        const image = ['jpg','jpeg','png','gif','bmp','webp'].includes(result.ext.toLowerCase())
+        // A PNG attachment is still a file; keep the same identity as the proof intake.
+        const image = !generated && (result.index === 0 || new URL(result.url).pathname.includes('/images/post/'))
         const fileId = generated ? `file:text-${result.ext}`
           : `${image ? 'image' : 'file'}:${result.index === 0 ? 'cover' : result.fileID}`
         const response = await chrome.runtime.sendMessage({

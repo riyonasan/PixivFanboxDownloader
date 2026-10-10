@@ -101,7 +101,7 @@ function downloadHarness(spool=false,eagle=false) {
     './DownloadInterval':{downloadInterval:{wait:async()=>{}}},'../setting/Settings':{settings},
   }
   const exports={}
-  vm.runInNewContext(compile('download/Download'),{exports,require:name=>dependencies[name],
+  vm.runInNewContext(compile('download/Download'),{exports,URL,require:name=>dependencies[name],
     window:{addEventListener(){}},chrome:{runtime:{sendMessage:async message=>{messages.push(message);return{receipt:{eagleState:'pending'}}}}},
   })
   return {Download:exports.Download,messages,failures,eagle}
@@ -118,6 +118,16 @@ test('mini save bypasses Eagle checks and uses the generated name with stable so
   assert.equal(h.messages[0].file.fileName,'123-abc.png')
   assert.equal(h.messages[0].file.registration.fileName,'FANBOX/作者/日付-投稿/日付-投稿-001.png')
   assert.match(h.failures[0],/保存済み.*登録待ち/)
+})
+
+test('PNG file attachments retain the file API identity across proof and regular saving',async()=>{
+  const h=downloadHarness(true)
+  const arg={id:'abc',taskBatch:10,saveToEagle:false,data:{postId:'123',createID:'creator',fileID:'abc',name:'attachment',ext:'png',index:1,size:5,url:'https://downloads.fanbox.cc/files/post/123/abc.png',tags:''}}
+  const object=Object.create(h.Download.prototype)
+  object.arg=arg;object.progressBarIndex=0
+  await object.download(arg)
+  assert.equal(h.messages[0].file.fileId,'file:abc')
+  assert.equal(h.messages[0].file.fileName,'attachment.png')
 })
 for(const eagle of [false,true]) test('existing download route is preserved: Eagle='+eagle,async()=>{
   const h=downloadHarness(false,eagle)
