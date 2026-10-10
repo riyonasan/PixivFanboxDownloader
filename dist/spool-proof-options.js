@@ -5,7 +5,9 @@ void (async () => {
   document.getElementById('remote').value = stored.spoolRemoteURL || ''
   try {
     const response = await fetch(chrome.runtime.getURL('spool-proof-local.json'), { credentials:'omit',cache:'no-store' })
-    collector = response.ok && (await response.json()).role === 'collector'
+    const local = response.ok ? await response.json() : {}
+    collector = local.role === 'collector'
+    if (stored.spoolRemoteURL === undefined) document.getElementById('remote').value = local.remoteURL || ''
   } catch { /* Local provisioning is optional. */ }
   document.getElementById('collector').hidden = !collector
   document.getElementById('enabled').checked = !!stored.spoolCollectionEnabled

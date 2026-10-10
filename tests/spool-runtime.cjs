@@ -66,6 +66,15 @@ test('management endpoint accepts only loopback or Tailnet IPv4 on the service p
   assert.equal(h.validateEndpoint('http://100.64.0.1:18096'),'http://100.64.0.1:18096')
   for(const url of ['http://example.com:18096','https://100.64.0.1:18096','http://100.64.0.1:80','http://100.63.0.1:18096','http://100.64.0.1:18096/path']) assert.throws(()=>h.validateEndpoint(url))
 })
+
+test('manager installation cannot scan or start old collection after Chrome reopens',async()=>{
+  const h=runtimeHarness({role:'manager',enabled:true})
+  assert.equal(await h.prepareSpoolCollection(),false)
+  assert.equal(await h.canStartSpoolCollection(),false)
+  assert.ok(!h.requests.some(x=>x.url.startsWith('http:')))
+  assert.equal(h.stored.autoCreatorProfiles[0].since,123)
+  assert.equal(h.stored.autoPendingPosts.length,1)
+})
 test('collector cannot start before a valid spool configuration has been applied',async()=>{
   const h=runtimeHarness()
   assert.equal(await h.canStartSpoolCollection(),false)

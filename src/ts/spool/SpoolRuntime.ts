@@ -7,7 +7,7 @@ totalDownloadLimitSwitch fee idRangeInput postDateStart postDateEnd downloadThre
 downloadInterval crawlInterval totalDownloadLimit totalDownloadLimitByte feeRange idRange textFormat
 userSetName dateFormat nameruleForNonImages imageSize titleMustText titleCannotText fileNameInclude fileNameExclude`).split(/\s+/)
 
-let local: Promise<{ role?: string; token?: string }> | undefined
+let local: Promise<{ role?: string; token?: string; remoteURL?: string }> | undefined
 export function localSpoolConfig() {
   local ??= fetch(chrome.runtime.getURL('spool-proof-local.json'), { credentials: 'omit', cache: 'no-store' })
     .then(async response => response.ok ? response.json() : {})
@@ -34,7 +34,7 @@ export async function spoolRequest(path: string, body?: unknown, remote = false)
   if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
     throw new Error('補助サービスのAPIトークンを設定してください')
   }
-  const base = remote ? validateEndpoint(typeof stored.spoolRemoteURL === 'string' ? stored.spoolRemoteURL : '') : 'http://127.0.0.1:18096'
+  const base = remote ? validateEndpoint(typeof stored.spoolRemoteURL === 'string' ? stored.spoolRemoteURL : config.remoteURL || '') : 'http://127.0.0.1:18096'
   const response = await fetch(base + path, {
     method: body === undefined ? 'GET' : 'POST', credentials: 'omit', redirect: 'error',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -46,7 +46,9 @@ export async function spoolRequest(path: string, body?: unknown, remote = false)
 
 // Called before scanning, under the scheduler's existing checking flag.
 export async function prepareSpoolCollection() {
-  if ((await localSpoolConfig()).role !== 'collector') return true
+  const role = (await localSpoolConfig()).role
+  if (role === 'manager') return false
+  if (role !== 'collector') return true
   const stored = await chrome.storage.local.get('spoolCollectionEnabled')
   if (!stored.spoolCollectionEnabled) return false
   const configuration = await spoolRequest('/v1/config')
@@ -75,7 +77,9 @@ export async function prepareSpoolCollection() {
 }
 
 export async function canStartSpoolCollection() {
-  if ((await localSpoolConfig()).role !== 'collector') return true
+  const role = (await localSpoolConfig()).role
+  if (role === 'manager') return false
+  if (role !== 'collector') return true
   const stored = await chrome.storage.local.get(['spoolCollectionEnabled','fanboxSetting'])
   const settings = stored.fanboxSetting as {saveToSpool?:boolean;saveToEagle?:boolean} | undefined
   if (!stored.spoolCollectionEnabled || !settings?.saveToSpool || settings.saveToEagle) return false
