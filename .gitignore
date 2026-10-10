@@ -38,3 +38,16 @@ services/spool_proof/data/
 services/spool_proof/secrets/
 services/spool_proof/__pycache__/
 dist/spool-proof-local.json
+
+# Private local state (keep the tracked dist distribution convention)
+*.key
+*.pem
+*.sqlite3
+*.sqlite3-*
+browser-profile/
+__pycache__/
+*.py[cod]
+.venv/
+*.log
+tmp/
+outputs/

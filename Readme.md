@@ -1,3 +1,5 @@
+この個人用forkの開発資料：[作業ルール](AGENTS.md)、[開発と引き継ぎ](DEV_WORKFLOW.md)、[仕様](docs/SPEC.md)、[構成](docs/ARCHITECTURE.md)、[技術引き継ぎ](docs/HANDOFF.md)、[決定事項](docs/DECISIONS.md)。ミニPCへの1件保存は実証段階です。[手順と制限](docs/FANBOX_FILE_PROOF.md)を参照してください。
+
 <!-- TOC -->
 
 - [简介](#简介)
