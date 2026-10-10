@@ -1,6 +1,6 @@
 # 現在の構成
 
-Manifest V3のChrome拡張。TypeScriptをwebpackで`content.js`と`background.js`へまとめ、既存の`dist`静的ファイルと読み込む。FANBOX専用のPython補助サービスに、保存受付と永続Eagle FIFOを実装する。実機はまだ1件保存実証版で、FIFO版は未配備。
+Manifest V3のChrome拡張。TypeScriptをwebpackで`content.js`と`background.js`へまとめ、既存の`dist`静的ファイルと読み込む。FANBOX専用のPython補助サービスに、保存受付と永続Eagle FIFOを実装する。FIFO版は実機へ配置済みだが、収集と実機でのFIFO動作の確認は残る。
 
 | 担当 | 主な実装 |
 |---|---|
@@ -26,6 +26,6 @@ Manifest V3のChrome拡張。TypeScriptをwebpackで`content.js`と`background.j
 
 実証版はPython標準ライブラリの単一HTTPサーバーで、loopbackのファイル受付だけを提供する。FIFO版はloopback受付と指定Tailnet IPの管理APIを同じ受付スレッドで扱い、別スレッド・別SQLite接続で登録処理を行う。Linuxのプロセスロックで同一保存先の二重起動を防ぐ。Bearerトークン・拡張Originと管理側の接続元を確認する。任意パス読取・削除APIはない。確定意図、ファイルの同期、サイズ・ハッシュ照合、SQLite受付を使い、確定途中の停止から復旧する。詳細は [保存実証手順](FANBOX_FILE_PROOF.md) を参照。
 
-自動取得はChrome起動中のalarmsで動く。1件保存実証は手動操作。専用collector設定で明示有効にした環境では、取得済みbytesを補助サービスへ送り、Eagle停止中も保存を続ける。既存の通常取得と直接Eagle登録は従来設定で動く。ミニPCの専用プロファイルでPNG1件の認証付き取得とブラウザ・補助サービス再起動後の保持を実証済み。OS起動後の常駐・常時収集は未実証。実証用の読み取り専用SMB共有からEagleへ1件登録し、Windows上とミニPCの読み取り共有の両方で原本のサイズ・SHA-256一致を確認した。FIFO版の実機配備・自動登録は未確認。送信意図とマーカーをitem POST前に記録し、再起動後は照合だけを行う。設定反映は取得条件だけを許可し、カーソル・保留・実行中記事・履歴を上書きしない。原本削除は未実装。詳細は [FIFO仕様](FANBOX_FIFO.md)。
+自動取得はChrome起動中のalarmsで動く。1件保存実証は手動操作。専用collector設定で明示有効にした環境では、取得済みbytesを補助サービスへ送り、Eagle停止中も保存を続ける。既存の通常取得と直接Eagle登録は従来設定で動く。ミニPCの専用プロファイルでPNG1件の認証付き取得とブラウザ・補助サービス再起動後の保持を実証済み。OS起動後の常駐・常時収集は未実証。実証用の読み取り専用SMB共有からEagleへ1件登録し、Windows上とミニPCの読み取り共有の両方で原本のサイズ・SHA-256一致を確認した。FIFO版の配備と認証付き読取接続は確認済み。新経路の実機自動登録は未確認。送信意図とマーカーをitem POST前に記録し、再起動後は照合だけを行う。設定反映は取得条件だけを許可し、カーソル・保留・実行中記事・履歴を上書きしない。原本削除は未実装。詳細は [FIFO仕様](FANBOX_FIFO.md)。
 
 Nodeの模擬テストはブラウザ転送を、Pythonテストはファイル・SQLite・HTTPと復旧を確認する。webpackはコンパイル確認。これらを実アカウント、実Chromium UI、Eagle、再起動・スリープからの復帰の確認と区別する。
