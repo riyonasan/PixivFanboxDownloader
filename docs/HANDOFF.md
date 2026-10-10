@@ -1,6 +1,6 @@
 # 技術引き継ぎ
 
-更新日: 2026-10-10 JST。再開ブランチは`feat/minipc-file-proof`。実装の基点は`41b04c16c365c12442d19c292805cc2fed71dee7`（この文書を含むコミット番号ではない）。個人用テンプレートを既存構成へ統合した。pushは依頼されていない。
+更新日: 2026-10-10 JST。再開ブランチは`feat/minipc-file-proof`。再開の基点は`2cc3292d7875863066f80ebd0ca300c80e338f8b`（この文書を含むコミット番号ではない）。個人用テンプレートを既存構成へ統合済み。pushは依頼されていない。
 
 ## 目的・未達条件
 
@@ -25,11 +25,15 @@ CLD-012の順序は認証付き1件保存 → Eagle登録実証 → 永続FIFO �
 ## 次の操作
 
 1. [DEV_WORKFLOW](../DEV_WORKFLOW.md) に従い、ブランチと未コミット変更を確認する。テンプレート統合のコミットはGit履歴で確認する。
-2. FANBOX実証へ戻る。OS変更の承認対象は、既存Chrome for Testing一式のroot所有・一般user書込不可の専用コピー`/opt/fanbox-chromium-proof`と、実行ファイル1パスだけの`userns`許可profile `/etc/apparmor.d/fanbox-chromium-proof`。全体のsysctl解除や`--no-sandbox`は使わない。例外はChromiumのsandboxを利用可能にするもので、新しい全面的なAppArmor隔離ではない。専用コピーの更新は別途必要。
-3. 承認後に対象衝突・所有権・書込権・元cacheへ戻るsymlinkがないことを確認し、当該profileだけ読み込む。専用ブラウザを自動再起動なしで1回起動する。まだOS変更は適用していない。
+2. OS変更は利用者が承認済み。既存Chrome for Testing一式のroot所有・一般user書込不可の専用コピー`/opt/fanbox-chromium-proof`と、実行ファイル1パスだけの`userns`許可profile `/etc/apparmor.d/fanbox-chromium-proof`を適用する。全体のsysctl解除や`--no-sandbox`は使わない。例外はChromiumのsandboxを利用可能にするもので、新しい全面的なAppArmor隔離ではない。専用コピーの更新は別途必要。
+3. 配置先衝突なし、source 303ファイル約407 MB、symlinkなし、十分な空き容量を確認済み。ただし`sudo -n`は対話認証が必要なため、OS変更はまだ適用していない。専用配置内の`apply-fanbox-sandbox.py`をミニPCの通常ユーザーが下記で一度実行する。パスワードはOSのsudoプロンプトだけへ入力し、チャットへ送らない。スクリプトは既存対象を上書きせず、コピーの全ファイルのハッシュ・root所有・書込権を確認し、当該profileだけ読み込む。成功表示は`FANBOX_SANDBOX_READY`。
+   ```bash
+   sudo /usr/bin/python3 "$HOME/services/fanbox-file-proof/apply-fanbox-sandbox.py"
+   ```
+   成功後はエージェントが配置とprofileを読み戻し、専用ブラウザを自動再起動なしで1回起動する。既存のサービスやブラウザは操作しない。
 4. 本人が専用ウィンドウを確認してFANBOXへログインし、閲覧できる有料投稿の小さな添付を選ぶ。保存・サイズ・SHA-256・内容・再起動保持を確認する。Cookieは転送しない。
 
-コマンドと通常の作業手順は [DEV_WORKFLOW](../DEV_WORKFLOW.md)、保存操作は [FANBOX_FILE_PROOF.md](FANBOX_FILE_PROOF.md)。起動承認はOSのセキュリティ変更承認を含まない。
+コマンドと通常の作業手順は [DEV_WORKFLOW](../DEV_WORKFLOW.md)、保存操作は [FANBOX_FILE_PROOF.md](FANBOX_FILE_PROOF.md)。今回の具体的なOS変更承認を、他の権限・共有・セキュリティ設定変更へ広げない。
 
 ## Notionと同期
 

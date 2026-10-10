@@ -10,4 +10,4 @@
 
 ## ブラウザ起動のsandbox対応
 
-提案・未適用。AppArmorの拒否に対応する専用実行パスの例外を検討している。OSのセキュリティ変更なので、起動承認だけを根拠に適用しない。承認対象と次の操作は [HANDOFF](HANDOFF.md) に置く。
+採用・未適用。2026-10-10に利用者が、既存Chrome for Testing一式のroot所有専用コピーと、その実行ファイル1パスに限定したAppArmorの`userns`許可を承認した。Chromium自身のsandboxを動かすための例外とし、OS全体の制限解除は行わない。適用にはミニPC上での管理者認証が必要。次の操作は [HANDOFF](HANDOFF.md) に置く。
