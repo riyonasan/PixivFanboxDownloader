@@ -17,10 +17,17 @@ const uploadId = 'a'.repeat(32)
 function harness(options = {}) {
   const calls = []
   let offset = 0
+  const persisted = []
   const context = { exports: {}, Uint8Array, ArrayBuffer, URL, AbortSignal,
-    chrome: { storage: { local: { get: async () => ({ spoolProofToken: 't'.repeat(40) }) } } },
+    chrome: { runtime: { getURL: (name) => 'chrome-extension://test/' + name }, storage: { local: {
+      get: async () => options.unconfigured ? {} : { spoolProofToken: 't'.repeat(40) },
+      set: async (value) => persisted.push(value),
+    } } },
     fetch: async (url, init) => {
       calls.push({ url, init })
+      if (url === 'chrome-extension://test/spool-proof-local.json') {
+        return { ok: !options.noProvisioning, json: async () => ({ token: options.badToken || 't'.repeat(40) }) }
+      }
       if (url === file.url) {
         if (options.sourceError) throw new Error('source failure')
         const data = options.bytes || new Uint8Array([1, 2, 3, 4, 5])
@@ -56,7 +63,7 @@ function harness(options = {}) {
       return { ok: true, json: async () => options.badReceipt || { ...receipt, size } }
     } }
   vm.runInNewContext(code, context)
-  return { save: context.exports.saveProofFile, calls }
+  return { save: context.exports.saveProofFile, calls, persisted }
 }
 
 test('authenticated source fetch and separate durable receipt without source URL transmission', async () => {
@@ -71,6 +78,22 @@ test('saved duplicate is verified without redownloading', async () => {
   await h.save(file)
   assert.equal(h.calls.length, 1)
 })
+
+test('private same-machine provisioning avoids manual credential transfer', async () => {
+  const h = harness({ unconfigured: true })
+  await h.save(file)
+  assert.deepEqual(JSON.parse(JSON.stringify(h.persisted)), [{ spoolProofToken: 't'.repeat(40) }])
+  assert.equal(h.calls[0].url, 'chrome-extension://test/spool-proof-local.json')
+})
+
+for (const options of [{ noProvisioning: true }, { badToken: 'invalid' }]) {
+  test('missing or invalid local provisioning cannot start a transfer: ' + JSON.stringify(options), async () => {
+    const h = harness({ unconfigured: true, ...options })
+    await assert.rejects(h.save(file))
+    assert.equal(h.calls.length, 1)
+    assert.equal(h.persisted.length, 0)
+  })
+}
 
 test('chunks stay bounded for larger source chunks', async () => {
   const bytes = new Uint8Array(2500000)

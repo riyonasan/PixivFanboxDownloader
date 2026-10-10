@@ -59,7 +59,22 @@ export async function saveProofFile(file: ProofFile): Promise<SavedReceipt> {
   saving = true
   try {
     const config = await chrome.storage.local.get('spoolProofToken')
-    const token = config.spoolProofToken
+    let token = config.spoolProofToken
+    // Optional per-machine provisioning; this private file is never packaged.
+    // This avoids copying service credentials through the user's clipboard/chat.
+    if (token === undefined) {
+      try {
+        const local = await fetch(chrome.runtime.getURL('spool-proof-local.json'), {
+          credentials: 'omit', cache: 'no-store',
+        })
+        if (local.ok) token = (await local.json()).token
+      } catch {
+        // Normal for an extension installed without local provisioning.
+      }
+      if (typeof token === 'string' && /^[A-Za-z0-9_-]{32,128}$/.test(token)) {
+        await chrome.storage.local.set({ spoolProofToken: token })
+      }
+    }
     if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
       throw new Error('拡張機能の保存実証設定でAPIトークンを設定してください')
     }

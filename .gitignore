@@ -37,3 +37,4 @@ dist/ntfy-config.json
 services/spool_proof/data/
 services/spool_proof/secrets/
 services/spool_proof/__pycache__/
+dist/spool-proof-local.json
