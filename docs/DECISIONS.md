@@ -10,4 +10,4 @@
 
 ## ブラウザ起動のsandbox対応
 
-採用・未適用。2026-10-10に利用者が、既存Chrome for Testing一式のroot所有専用コピーと、その実行ファイル1パスに限定したAppArmorの`userns`許可を承認した。Chromium自身のsandboxを動かすための例外とし、OS全体の制限解除は行わない。適用にはミニPC上での管理者認証が必要。次の操作は [HANDOFF](HANDOFF.md) に置く。
+採用・適用済み。2026-10-10に利用者が、既存Chrome for Testing一式のroot所有専用コピーと、その実行ファイル1パスに限定したAppArmorの`userns`許可を承認し、ミニPC上で管理者認証して適用した。コピーの一致と所有権、実プロセスへのprofile適用を確認。Chromium自身のsandboxを動かすための例外とし、OS全体の制限は維持する。専用コピーの更新は別途必要。現状と次の操作は [HANDOFF](HANDOFF.md) に置く。

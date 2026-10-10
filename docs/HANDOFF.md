@@ -1,42 +1,39 @@
 # 技術引き継ぎ
 
-更新日: 2026-10-10 JST。再開ブランチは`feat/minipc-file-proof`。再開の基点は`2cc3292d7875863066f80ebd0ca300c80e338f8b`（この文書を含むコミット番号ではない）。個人用テンプレートを既存構成へ統合済み。pushは依頼されていない。
+更新日: 2026-10-10 JST。再開ブランチは`feat/minipc-file-proof`。再開の基点は`30f75e0`（この文書を含むコミット番号ではない）。個人用テンプレート統合済み。pushは依頼されていない。
 
-## 目的・未達条件
+## 目的・受入状況
 
-CLD-012の順序は認証付き1件保存 → Eagle登録実証 → 永続FIFO → 本移行。最初の実ファイル保存、本人の内容確認、ブラウザ・補助サービス再起動後の保持がまだ未達。後段へ進めない。ミニPCの別作業終了が伝えられ、専用環境への配置は再開済み。
+CLD-012の順序は認証付き1件保存 → Eagle登録実証 → 永続FIFO → 本移行。**最初の保存実証は成立した。** 次は削除を無効にしたUNC経由のEagle登録1件と、Eagle原本のサイズ・SHA-256照合。FIFO、本移行、自動削除は未着手。
 
-## 現在の根拠
+## 確認済みの根拠
 
-- 1件保存の実装`71e3225`と、同じPC内のトークン初期設定`41b04c1`をローカルコミット済み。各変更は独立したGPT-6.1 Sol/highの最終レビュー済み。
-- ローカルで保存テスト14件、ブラウザ模擬テスト24件、既存自動取得テスト13件、webpackビルド成功。Linuxでも保存テスト14件成功。実FANBOXの取得成功は示していない。
-- 専用補助サービス`fanbox-proof-storage.service`はloopback `18096`で稼働し、認証付きhealth応答を確認済み。Eagle・原本削除は無効。
-- ミニPCはUbuntu 26.04.1、Python 3.14.4。空き容量は配置時約387 GiB。既存ブラウザ・他サービス・共有は変更していない。
-- 専用Chrome for Testing 151の起動はsandbox初期化で終了。AppArmorの制限プロファイルへ移ったブラウザの子プロセスが`sys_admin`を拒否されたことをカーネルログで確認。再試行を止め、独立した原因・方針レビュー済み。
+- Linuxの専用Chromiumで本人がFANBOXへログインし、閲覧可能な有料投稿のPNG1件を保存した。通常ファイル、SQLite、UI、確認用に読み戻したコピーのサイズ・SHA-256が一致。本人が内容の一致と正常表示を確認した。
+- エージェントが専用ブラウザと補助サービスを再起動した。本人がログイン保持と同じファイルの再受付で同一受付ID・サイズ・SHA-256が返ることを確認。再受付後も原本は1件で、ローカルの原本ハッシュは一致した。
+- 補助サービスの認証付きhealth、実際に読み込まれた拡張ID、専用プロファイル、AppArmorの実プロセスラベルを確認。Cookieは転送せず、Eagle登録・原本削除は実行していない。
+- ローカル保存テスト14件、ブラウザ模擬テスト24件、既存自動取得テスト13件、webpack成功。Linux保存テスト14件成功。これらと上記の実機確認は区別する。
 
-## 専用環境と保護対象
+## 専用環境と制約
 
-実際のSSH接続先・端末固有パスは承認済みローカル接続設定を使う。専用配置は利用者ホーム内の`services/fanbox-file-proof`。その中の`dist/`、`browser-profile/`、`services/spool_proof/data/`と`secrets/`を使う。トークンはミニPC内で生成済みで、チャット・Git・配布ZIPへ出していない。期待するunpacked拡張IDは配置パスから算出済みだが、実際の読込IDは未確認。
+SSH接続先・端末固有パスは承認済みローカル接続設定を使う。利用者ホーム内の`services/fanbox-file-proof`が専用配置で、`dist/`、`browser-profile/`、`services/spool_proof/data/`と`secrets/`を使う。秘密値、取得ファイル名・ID・画像・ハッシュなどの私的な実証データは公開Gitへ入れない。
 
-ブラウザの専用unitは停止中。補助サービスはtransient user unitであり、本体再起動後の自動起動はまだ設定していない。元の収集環境の切替も行っていない。
+Ubuntu 26.04.1、Python 3.14.4、Chrome for Testing 151。配置時の空きは約387 GiB。`/opt/fanbox-chromium-proof`と`/etc/apparmor.d/fanbox-chromium-proof`は本人承認後に適用済み。全303ファイルのコピー一致・root所有・一般user書込不可・symlinkなし、完全一致パスのprofile内容を読み戻した。Chromium実プロセスにprofileが適用され、OS全体のuser namespace制限は有効のまま。専用ブラウザ一式の更新は別途必要。
 
-導入前からの変更は今回のコミットへ含めない: `Readme-JA.md`、`dist/js/background.js`とmap、`dist/js/content.js`とmap、`src/ts/InitHomePage.ts`、`src/ts/auto/AutoScheduler.ts`、`src/ts/auto/AutoTypes.ts`、未追跡`tests/auto-scheduler.cjs`。これらの9ファイルは導入前後のハッシュを照合して保護する。
+`fanbox-proof-storage.service`はloopback `18096`、`fanbox-proof-browser.service`は専用プロファイルで稼働中。どちらもtransient user unit。本体再起動後の自動起動、遠隔セッション終了時の常駐、大容量ファイル、認証切れ・容量復旧、メインPCスリープ中の取得は未実証。遠隔ログインの画面セッション切替でブラウザが終了したため、その時点の遠隔セッションで起動し直した。今回の保存実証を常時収集の成立とは扱わない。
+
+既存の他サービス・ブラウザ・共有は変更していない。元の収集環境の切替は行っていない。
+
+## 既存変更の保護
+
+今回へ含めない変更: `Readme-JA.md`、`dist/js/background.js`とmap、`dist/js/content.js`とmap、`src/ts/InitHomePage.ts`、`src/ts/auto/AutoScheduler.ts`、`src/ts/auto/AutoTypes.ts`、未追跡`tests/auto-scheduler.cjs`。9ファイルは導入前後のハッシュを照合して保護している。
 
 ## 次の操作
 
-1. [DEV_WORKFLOW](../DEV_WORKFLOW.md) に従い、ブランチと未コミット変更を確認する。テンプレート統合のコミットはGit履歴で確認する。
-2. OS変更は利用者が承認済み。既存Chrome for Testing一式のroot所有・一般user書込不可の専用コピー`/opt/fanbox-chromium-proof`と、実行ファイル1パスだけの`userns`許可profile `/etc/apparmor.d/fanbox-chromium-proof`を適用する。全体のsysctl解除や`--no-sandbox`は使わない。例外はChromiumのsandboxを利用可能にするもので、新しい全面的なAppArmor隔離ではない。専用コピーの更新は別途必要。
-3. 配置先衝突なし、source 303ファイル約407 MB、symlinkなし、十分な空き容量を確認済み。ただし`sudo -n`は対話認証が必要なため、OS変更はまだ適用していない。専用配置内の`apply-fanbox-sandbox.py`をミニPCの通常ユーザーが下記で一度実行する。パスワードはOSのsudoプロンプトだけへ入力し、チャットへ送らない。スクリプトは既存対象を上書きせず、コピーの全ファイルのハッシュ・root所有・書込権を確認し、当該profileだけ読み込む。成功表示は`FANBOX_SANDBOX_READY`。
-   ```bash
-   sudo /usr/bin/python3 "$HOME/services/fanbox-file-proof/apply-fanbox-sandbox.py"
-   ```
-   成功後はエージェントが配置とprofileを読み戻し、専用ブラウザを自動再起動なしで1回起動する。既存のサービスやブラウザは操作しない。
-4. 本人が専用ウィンドウを確認してFANBOXへログインし、閲覧できる有料投稿の小さな添付を選ぶ。保存・サイズ・SHA-256・内容・再起動保持を確認する。Cookieは転送しない。
-
-コマンドと通常の作業手順は [DEV_WORKFLOW](../DEV_WORKFLOW.md)、保存操作は [FANBOX_FILE_PROOF.md](FANBOX_FILE_PROOF.md)。今回の具体的なOS変更承認を、他の権限・共有・セキュリティ設定変更へ広げない。
+1. [DEV_WORKFLOW](../DEV_WORKFLOW.md) に従い、ブランチと未コミット変更を確認する。
+2. 既存のSMB共有とEagle接続環境を読み取り確認し、保存原本をUNCで読める方法と、既存の`FANBOX/...`命名・重複判定を確認する。追加の共有・権限変更が必要なら具体案を提示する。
+3. 削除無効で`addFromPath`を1件実証し、Eagle内原本のサイズ・SHA-256まで照合する。未照合・成否不明時は原本を保持し、盲目的な再POSTをしない。
+4. この実証が成立してから永続FIFOへ進む。現在の専用保存APIへ任意パス読取・削除APIを追加しない。
 
 ## Notionと同期
 
-Notion対応先は利用者指定のCLD-012、または承認済みローカル対応表から確認する。CLD-012の利用可否・sandbox対応の制約・実機未確認の説明を反映し、読み戻し確認済み。タスクのプロパティは変更していない。技術的な再開詳細・テストログはこの文書とGitへ集約する。
-
-本ブランチは未push。ローカル変更の消失や別PCでの二重作業を避けるため、同期が承認されるまでは元PCで継続する。秘密ファイル・原本・プロファイルはGitで移動しない。
+Notion対応先は利用者指定のCLD-012、または承認済みローカル対応表から確認する。利用可否と制約だけを区切りで反映し、タスクのプロパティは変更しない。技術的な再開詳細・検証記録はこの文書とGitへ集約する。本ブランチは未push。原本・プロファイル・秘密ファイルはGitで移動しない。
