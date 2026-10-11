@@ -66,7 +66,8 @@ def validate_config(value):
 
 
 class SpoolStorage(Storage):
-    def __init__(self, root, spool, client, disk_usage=shutil.disk_usage):
+    def __init__(self, root, spool, client, disk_usage=shutil.disk_usage, deletion_enabled=False):
+        self.deletion_enabled = deletion_enabled
         super().__init__(root, min_free=0, max_file=MAX_FILE)
         self.disk_usage = disk_usage
         self.db.executescript('''
@@ -113,6 +114,21 @@ class SpoolStorage(Storage):
             result['eagleState'] = job['state']
         return result
 
+    def recover(self, row):
+        def cleaned():
+            return self.db.execute('''SELECT 1 FROM local_cleanup c JOIN eagle_queue q
+                ON q.receipt_key=c.receipt_key WHERE c.receipt_key=? AND q.state='done'
+                AND c.deletion_started=1''', (row['key'],)).fetchone() is not None
+        if row['state']=='saved' and cleaned():
+            return self.receipt(row)
+        try:
+            return super().recover(row)
+        except (Rejected, OSError):
+            # The worker may commit its tombstone while this connection verifies.
+            if row['state']=='saved' and cleaned():
+                return self.receipt(row)
+            raise
+
     def begin(self, metadata):
         if not isinstance(metadata,dict):
             raise Rejected('Invalid upload metadata')
@@ -145,13 +161,15 @@ class SpoolStorage(Storage):
 
     def status(self):
         rows = self.db.execute('''SELECT r.key AS receiptId,r.name AS fileName,r.size,r.sha256,r.state AS saveState,
-            COALESCE(q.state,'not_submitted') AS eagleState,q.reason,q.item_id AS itemId,q.seq
-            FROM receipts r LEFT JOIN eagle_queue q ON r.key=q.receipt_key ORDER BY COALESCE(q.seq,0) DESC LIMIT 200''').fetchall()
+            COALESCE(q.state,'not_submitted') AS eagleState,q.reason,q.item_id AS itemId,q.seq,
+            COALESCE(c.state,'retained') AS localFileState,c.reason AS cleanupReason
+            FROM receipts r LEFT JOIN eagle_queue q ON r.key=q.receipt_key
+            LEFT JOIN local_cleanup c ON c.receipt_key=r.key ORDER BY COALESCE(q.seq,0) DESC LIMIT 200''').fetchall()
         counts = {row[0]:row[1] for row in self.db.execute('SELECT state,count(*) FROM eagle_queue GROUP BY state')}
         applied = self.db.execute("SELECT value FROM runtime_state WHERE name='applied_configuration'").fetchone()
         return {**self.capacity(),'counts':counts,'items':[dict(row) for row in rows],
                 'configurationRevision':self.config()['revision'],'appliedRevision':applied[0] if applied else None,
-                'deletionEnabled':False}
+                'deletionEnabled':self.deletion_enabled}
 
 
 class SpoolHandler(Handler):
@@ -223,19 +241,24 @@ def notification_step(storage, url):
         pass
 
 
-def worker(root, spool, client, stop, notification_url):
-    storage = SpoolStorage(root,spool,client)
+def worker(root, spool, client, stop, notification_url, deletion_enabled=False):
+    storage = SpoolStorage(root,spool,client,deletion_enabled=deletion_enabled)
     try:
         while not stop.is_set():
             try:
                 storage.capacity()
                 storage.queue.step()
+                if deletion_enabled:
+                    storage.queue.cleanup_step()
+                for cleanup in storage.db.execute("SELECT receipt_key,state FROM local_cleanup").fetchall():
+                    storage.transition('cleanup:'+cleanup['receipt_key'],cleanup['state'],
+                        'FANBOX: 登録済み原本の自動削除を保留しました。状態一覧で確認してください。' if cleanup['state']=='held' else None)
                 for job in storage.db.execute("SELECT receipt_key,state FROM eagle_queue").fetchall():
                     storage.transition('eagle:'+job['receipt_key'],job['state'],
                         'FANBOX: Eagle登録に確認待ちがあります。状態一覧で確認してください。' if job['state']=='held' else None)
                 notification_step(storage,notification_url)
             except Exception:
-                print('FANBOX FIFO storage unavailable; intent and originals retained',flush=True)
+                print('FANBOX FIFO storage unavailable; durable records retained',flush=True)
             stop.wait(5)
     finally:
         storage.close()
@@ -247,6 +270,9 @@ def main():
     args = parser.parse_args()
     # Contains paths/endpoints only; secrets stay in separate private files.
     config = json.loads(Path(args.local_config).read_text(encoding='utf-8'))
+    deletion_enabled = config.get('deletionEnabled', False)
+    if type(deletion_enabled) is not bool:
+        raise ValueError('deletionEnabled must be a local boolean setting')
     os.umask(0o077)
     root = Path(config['dataDir'])
     root.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -254,10 +280,10 @@ def main():
     with (root/'service.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         client = EagleClient(config['eagleApi'],config['eagleTokenFile'],config['uncRoot'],config['eagleLibraryPath'],config['eagleLibraryMount'])
-        storage = SpoolStorage(root,config['spoolDir'],client)
+        storage = SpoolStorage(root,config['spoolDir'],client,deletion_enabled=deletion_enabled)
         token = Path(config['tokenFile']).read_text(encoding='utf-8').strip()
         stop = threading.Event()
-        thread = threading.Thread(target=worker,args=(root,config['spoolDir'],client,stop,config.get('notificationURL')),daemon=True)
+        thread = threading.Thread(target=worker,args=(root,config['spoolDir'],client,stop,config.get('notificationURL'),deletion_enabled),daemon=True)
         servers = []
         try:
             # Both listeners use one intake connection. The worker has a separate SQLite connection.
@@ -274,7 +300,7 @@ def main():
             with selectors.DefaultSelector() as selector:
                 for server in servers:
                     selector.register(server,selectors.EVENT_READ)
-                print('FANBOX spool started; originals retained',flush=True)
+                print('FANBOX spool started; verified cleanup '+('enabled' if deletion_enabled else 'disabled'),flush=True)
                 while True:
                     for key,_ in selector.select(timeout=1):
                         key.fileobj.handle_request()

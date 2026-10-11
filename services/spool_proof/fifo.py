@@ -1,4 +1,4 @@
-"""FANBOX-only durable registration FIFO. Originals are always retained here."""
+"""FANBOX-only durable registration FIFO and verified local-file cleanup."""
 import hashlib
 import json
 import os
@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import time
 from urllib.parse import urlsplit
+from service import sync_directory
 
 
 class Unavailable(Exception):
@@ -66,6 +67,10 @@ class Queue:
             CREATE TABLE IF NOT EXISTS eagle_attempts (
                 receipt_key TEXT NOT NULL, attempt INTEGER NOT NULL, intent TEXT NOT NULL,
                 PRIMARY KEY(receipt_key, attempt));
+            CREATE TABLE IF NOT EXISTS local_cleanup (
+                receipt_key TEXT PRIMARY KEY, state TEXT NOT NULL,
+                reason TEXT, next_attempt REAL NOT NULL DEFAULT 0, deleted_at REAL,
+                deletion_started INTEGER NOT NULL DEFAULT 0);
         ''')
         self.db.commit()
 
@@ -207,3 +212,49 @@ class Queue:
         if confirm_not_registered is not True or job is None or job['state'] != 'held':
             raise ValueError('Explicit unregistered confirmation is required for a held item')
         self.change(key, state='pending', intent=None, next_attempt=0, reason=None, checking_until=None)
+
+    def cleanup_change(self, key, state, reason=None, next_attempt=0):
+        with self.db:
+            self.db.execute('''INSERT INTO local_cleanup(receipt_key,state,reason,next_attempt,deleted_at,deletion_started)
+                VALUES (?,?,?,?,?,?) ON CONFLICT(receipt_key) DO UPDATE SET
+                state=excluded.state,reason=excluded.reason,next_attempt=excluded.next_attempt,
+                deleted_at=excluded.deleted_at,
+                deletion_started=MAX(local_cleanup.deletion_started,excluded.deletion_started)''',
+                (key,state,reason,next_attempt,self.clock() if state=='deleted' else None,
+                 int(state in ('deleting','deleted'))))
+
+    def cleanup_step(self):
+        # Cleanup is separate from the registration FIFO; a failure never reopens a done job.
+        row = self.db.execute('''SELECT q.receipt_key,c.state AS cleanup_state FROM eagle_queue q
+            LEFT JOIN local_cleanup c ON c.receipt_key=q.receipt_key
+            WHERE q.state='done' AND (c.state IS NULL OR
+                (c.state IN ('retry','deleting') AND c.next_attempt<=?)) ORDER BY q.seq LIMIT 1''',
+                (self.clock(),)).fetchone()
+        if row is None:
+            return
+        key, previous = row['receipt_key'], row['cleanup_state']
+        job = self.job(key)
+        paths = [self.objects/(key+'.bin'),
+                 self.spool/(key+'.'+job['spec']['fileName'].rsplit('.',1)[-1].lower())]
+        try:
+            # GET-only recheck of the recorded Eagle item, destination and library hash.
+            self.client.verify_done(job, paths[1])
+            for path in paths:
+                if previous != 'deleting' or path.exists() or path.is_symlink():
+                    verify_file(path, job)
+            # This durable tombstone precedes both unlinks, so repeat intake/restarts
+            # keep the original receipt even if only one unlink completed.
+            self.cleanup_change(key, 'deleting')
+            for path in paths:
+                if path.exists() or path.is_symlink():
+                    verify_file(path, job)
+                    path.unlink()
+                sync_directory(path.parent)
+            self.cleanup_change(key, 'deleted')
+        except Held as error:
+            self.cleanup_change(key, 'held', str(error))
+        except (Unavailable, OSError):
+            # Preserve deleting across partial removal; the next try rechecks Eagle.
+            current = self.db.execute('SELECT state FROM local_cleanup WHERE receipt_key=?', (key,)).fetchone()
+            state = 'deleting' if current and current['state']=='deleting' else 'retry'
+            self.cleanup_change(key, state, 'cleanup_unavailable', self.clock()+self.retry_seconds)

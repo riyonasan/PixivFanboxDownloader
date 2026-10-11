@@ -50,6 +50,13 @@ class FakeEagle:
         if self.mode in ('lost_response','lost_no_item'):
             raise OSError('response lost')
 
+    def verify_done(self, job, staged):
+        self.ready()
+        matches = [item for item in self.items if item['id']==job['item_id']]
+        if len(matches)!=1:
+            raise Held('cleanup_registration_changed')
+        self.verify(matches[0], job, {}, 'library')
+
 
 def meta(file_id='abc'):
     return {'postId':'123','fileId':'image:'+file_id,'fileName':file_id+'.png','expectedSize':5,
@@ -274,8 +281,175 @@ class FifoTests(unittest.TestCase):
         self.assertEqual(self.state(key),'held')
         self.assertFalse(self.eagle.posts)
 
+    def completed(self):
+        receipt = self.save()
+        self.queue.step()
+        self.queue.step()
+        self.assertEqual(self.state(receipt['receiptId']), 'done')
+        return receipt
+
+    def cleanup_state(self, key):
+        return self.storage.db.execute('SELECT state FROM local_cleanup WHERE receipt_key=?', (key,)).fetchone()[0]
+
+    def test_cleanup_deletes_only_verified_done_and_repeat_receipt_survives_restart(self):
+        receipt = self.completed()
+        key = receipt['receiptId']
+        self.queue.cleanup_step()
+        self.assertEqual(self.cleanup_state(key), 'deleted')
+        self.assertFalse((self.root/'objects'/(key+'.bin')).exists())
+        self.assertFalse((self.spool/(key+'.png')).exists())
+        self.restart()
+        self.assertEqual(self.storage.begin(meta())['receiptId'], key)
+        self.assertEqual(self.storage.finish(self.storage.db.execute('SELECT upload_id FROM receipts').fetchone()[0],5)['receiptId'], key)
+        self.queue.step()
+        self.queue.cleanup_step()
+        self.assertEqual(len(self.eagle.posts), 1)
+        self.assertEqual(self.storage.db.execute('SELECT count(*) FROM receipts').fetchone()[0], 1)
+
+    def test_cleanup_pending_and_unknown_registration_never_delete(self):
+        key = self.save()['receiptId']
+        self.queue.cleanup_step()
+        self.queue.step()
+        self.queue.cleanup_step()
+        self.assertTrue((self.root/'objects'/(key+'.bin')).exists())
+        self.assertFalse(self.storage.db.execute('SELECT * FROM local_cleanup').fetchall())
+
+    def test_cleanup_eagle_offline_retries_without_blocking_registration(self):
+        key = self.completed()['receiptId']
+        self.eagle.available = False
+        self.queue.cleanup_step()
+        self.assertEqual(self.cleanup_state(key), 'retry')
+        self.assertTrue((self.root/'objects'/(key+'.bin')).exists())
+        self.eagle.available = True
+        self.now += 31
+        self.queue.cleanup_step()
+        self.assertEqual(self.cleanup_state(key), 'deleted')
+
+    def test_cleanup_changed_eagle_or_local_content_holds_without_delete(self):
+        key = self.completed()['receiptId']
+        self.eagle.items[0]['mismatch'] = True
+        self.queue.cleanup_step()
+        self.assertEqual(self.cleanup_state(key), 'held')
+        self.assertTrue((self.root/'objects'/(key+'.bin')).exists())
+        self.assertTrue((self.spool/(key+'.png')).exists())
+
+    def test_cleanup_changed_staged_content_retains_both_files(self):
+        key = self.completed()['receiptId']
+        (self.spool/(key+'.png')).write_bytes(b'wrong')
+        self.queue.cleanup_step()
+        self.assertEqual(self.cleanup_state(key), 'held')
+        self.assertTrue((self.root/'objects'/(key+'.bin')).exists())
+
+    def test_cleanup_missing_local_file_without_tombstone_is_held(self):
+        key = self.completed()['receiptId']
+        (self.root/'objects'/(key+'.bin')).unlink()
+        self.queue.cleanup_step()
+        self.assertEqual(self.cleanup_state(key), 'held')
+        self.assertTrue((self.spool/(key+'.png')).exists())
+        with self.assertRaises(Rejected):
+            self.storage.begin(meta())
+
+    def test_cleanup_intent_db_failure_deletes_nothing(self):
+        key = self.completed()['receiptId']
+        self.storage.db.execute("CREATE TRIGGER fail_cleanup BEFORE INSERT ON local_cleanup BEGIN SELECT RAISE(ABORT,'simulated'); END")
+        with self.assertRaises(sqlite3.Error):
+            self.queue.cleanup_step()
+        self.assertTrue((self.root/'objects'/(key+'.bin')).exists())
+        self.assertTrue((self.spool/(key+'.png')).exists())
+
+    def test_cleanup_partial_unlink_crash_recovers_and_does_not_repost(self):
+        key = self.completed()['receiptId']
+        original_unlink = Path.unlink
+        def crash(path, *args, **kwargs):
+            if path.parent==self.spool:
+                raise Crash()
+            return original_unlink(path, *args, **kwargs)
+        with patch.object(Path, 'unlink', crash):
+            with self.assertRaises(Crash):
+                self.queue.cleanup_step()
+        self.restart()
+        self.assertEqual(self.storage.begin(meta())['receiptId'], key)
+        self.queue.cleanup_step()
+        self.assertEqual(self.cleanup_state(key), 'deleted')
+        self.assertEqual(len(self.eagle.posts), 1)
+
+    def test_cleanup_partial_removal_then_mismatch_preserves_receipt(self):
+        key = self.completed()['receiptId']
+        self.queue.cleanup_change(key, 'deleting')
+        (self.root/'objects'/(key+'.bin')).unlink()
+        self.eagle.items[0]['mismatch'] = True
+        self.queue.cleanup_step()
+        self.assertEqual(self.cleanup_state(key), 'held')
+        self.assertEqual(self.storage.begin(meta())['receiptId'], key)
+        self.assertTrue((self.spool/(key+'.png')).exists())
+
+    def test_cleanup_final_db_failure_recovers(self):
+        key = self.completed()['receiptId']
+        self.storage.db.execute("CREATE TRIGGER fail_deleted BEFORE UPDATE ON local_cleanup WHEN NEW.state='deleted' BEGIN SELECT RAISE(ABORT,'simulated'); END")
+        with self.assertRaises(sqlite3.Error):
+            self.queue.cleanup_step()
+        self.restart()
+        self.assertEqual(self.storage.begin(meta())['receiptId'], key)
+        self.storage.db.execute('DROP TRIGGER fail_deleted')
+        self.queue.cleanup_step()
+        self.assertEqual(self.cleanup_state(key), 'deleted')
+
+    def test_cleanup_unlink_failure_preserves_deleting_until_retry(self):
+        key = self.completed()['receiptId']
+        with patch.object(Path, 'unlink', side_effect=PermissionError()):
+            self.queue.cleanup_step()
+        self.assertEqual(self.cleanup_state(key), 'deleting')
+        self.restart()
+        self.now += 31
+        self.queue.cleanup_step()
+        self.assertEqual(self.cleanup_state(key), 'deleted')
+
+    @unittest.skipIf(__import__('os').name=='nt', 'Linux deployment symlink boundary')
+    def test_cleanup_symlink_never_deletes_external_target(self):
+        key = self.completed()['receiptId']
+        target = Path(self.tmp.name)/'outside.png'
+        target.write_bytes(b'hello')
+        staged = self.spool/(key+'.png')
+        staged.unlink()
+        staged.symlink_to(target)
+        self.queue.cleanup_step()
+        self.assertEqual(self.cleanup_state(key), 'held')
+        self.assertEqual(target.read_bytes(), b'hello')
+        self.assertTrue((self.root/'objects'/(key+'.bin')).exists())
+
 
 class NamingTests(unittest.TestCase):
+    def test_cleanup_resolves_existing_destination_without_post_and_checks_recorded_id(self):
+        with tempfile.TemporaryDirectory() as root:
+            mount = Path(root)
+            original = mount/'images'/'item.info'/'投稿-001.png'
+            original.parent.mkdir(parents=True)
+            original.write_bytes(b'hello')
+            client = EagleClient('http://127.0.0.1:41595/api', mount/'token', '\\\\host\\FanboxSpool', 'library', mount)
+            client.ready = lambda:'library'
+            spec = meta()['registration']
+            item = {'id':'item','name':'投稿-001','ext':'png','size':5,'url':spec['website'],
+                    'folders':['folder'],'tags':['tag']}
+            folders = [{'name':'FANBOX','id':'root','children':[{'name':'作者','id':'creator',
+                       'children':[{'name':'2026-10-10-投稿','id':'folder'}]}]}]
+            calls = []
+            def request(endpoint, payload=None):
+                self.assertIsNone(payload)  # GET-only, never create or submit.
+                calls.append(endpoint)
+                return folders if endpoint=='folder/list' else [item]
+            client.request = request
+            job = {'spec':spec,'intent':None,'item_id':'item','size':5,
+                   'sha256':hashlib.sha256(b'hello').hexdigest()}
+            client.verify_done(job, mount/'key.png')
+            item['id'] = 'different'
+            with self.assertRaises(Held):
+                client.verify_done(job, mount/'key.png')
+            item['id'] = 'item'
+            original.write_bytes(b'wrong')
+            with self.assertRaises(Held):
+                client.verify_done(job, mount/'key.png')
+            self.assertFalse(any('create' in call or 'addFromPath' in call for call in calls))
+
     def test_existing_hierarchy_and_zero_padding(self):
         self.assertEqual(folder_path('fanbox/作者/日付-投稿/日付-投稿-001.png'),['FANBOX','作者','日付-投稿'])
         self.assertEqual(folder_path('作者/x.png'),['FANBOX','作者'])

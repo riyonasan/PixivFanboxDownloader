@@ -150,3 +150,31 @@ class EagleClient:
 
     def post(self, payload):
         self.request('item/addFromPath', payload)
+
+    def verify_done(self, job, staged):
+        library = self.ready()
+        if job['intent']:
+            payload = job['intent']['payload']
+            library = job['intent']['library']
+            marker = job['intent']['marker']
+        else:
+            # Legacy/deduplicated done jobs have no POST intent. Resolve only
+            # existing folders; cleanup must never call folder/create or item POST.
+            level = self.request('folder/list')
+            parent = None
+            for name in folder_path(job['spec']['fileName']):
+                if not isinstance(level, list):
+                    raise Unavailable('eagle_folders_unavailable')
+                matches = [item for item in level if item.get('name') == name]
+                if len(matches) != 1:
+                    raise Held('cleanup_destination_changed')
+                parent = matches[0]['id']
+                level = matches[0].get('children', [])
+            payload = {'path':self.unc_root+'\\'+staged.name,
+                       'name':job['spec']['fileName'].split('/')[-1].rsplit('.',1)[0],
+                       'website':job['spec']['website'],'tags':job['spec']['tags'],'folderId':parent}
+            marker = None
+        items = self.find(payload, marker=marker)
+        if len(items) != 1 or items[0].get('id') != job['item_id']:
+            raise Held('cleanup_registration_changed')
+        self.verify(items[0], job, payload, library)
