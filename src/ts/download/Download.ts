@@ -85,6 +85,7 @@ class Download {
               fileName: this.fileName,
               website: `https://www.fanbox.cc/@${encodeURIComponent(result.createID)}/posts/${encodeURIComponent(result.postId)}`,
               tags: result.tags ? result.tags.split(',').filter(Boolean) : [],
+              ...(image ? { imageIndex: result.index } : {}),
             },
           },
         })

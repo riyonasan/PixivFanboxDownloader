@@ -113,6 +113,56 @@ class FifoTests(unittest.TestCase):
         self.assertTrue((self.root/'objects'/(key+'.bin')).exists())
         self.assertTrue((self.spool/(key+'.png')).exists())
 
+    def test_image_addition_dates_follow_index_despite_reverse_receipt_order_and_restart(self):
+        keys = []
+        for index in (3, 1, 2):
+            value = meta(str(index))
+            value['registration']['imageIndex'] = index
+            # A custom filename need not end in the index.
+            value['registration']['fileName'] = f'FANBOX/作者/{index:03d}-投稿.png'
+            keys.append(self.save(value)['receiptId'])
+            self.now += 60
+        self.restart()
+        for _ in keys:
+            self.queue.step()
+            self.queue.step()
+        self.assertTrue(all(self.state(key) == 'done' for key in keys))
+        self.assertEqual([p['modificationTime'] for p in self.eagle.posts],
+                         [997000, 999000, 998000])
+        self.assertEqual([p['name'] for p in sorted(self.eagle.posts,
+                         key=lambda p:p['modificationTime'], reverse=True)],
+                         ['001-投稿', '002-投稿', '003-投稿'])
+        self.assertEqual(self.storage.db.execute('SELECT count(*) FROM eagle_order_bases').fetchone()[0], 1)
+
+    def test_addition_date_survives_unknown_result_and_explicit_resubmit(self):
+        value = meta()
+        value['registration']['imageIndex'] = 1
+        key = self.save(value)['receiptId']
+        self.eagle.mode = 'lost_no_item'
+        self.queue.step()
+        first_time = self.eagle.posts[0]['modificationTime']
+        self.restart()
+        self.now += 400
+        self.queue.step()
+        self.assertEqual(self.state(key), 'held')
+        self.queue.resubmit(key, True)
+        self.eagle.mode = 'normal'
+        self.queue.step()
+        self.assertEqual(self.eagle.posts[1]['modificationTime'], first_time)
+
+    def test_legacy_registration_keeps_default_addition_date(self):
+        self.save()
+        self.queue.step()
+        self.assertNotIn('modificationTime', self.eagle.posts[0])
+
+    def test_invalid_image_index_rejected_before_receipt(self):
+        for index in (-1, True, 1.5, '1', None):
+            value = meta()
+            value['registration']['imageIndex'] = index
+            with self.assertRaises(Rejected):
+                self.storage.begin(value)
+        self.assertFalse(self.storage.db.execute('SELECT * FROM receipts').fetchall())
+
     def test_crash_immediately_before_post_never_reposts_after_restart(self):
         key = self.save()['receiptId']
         self.eagle.mode = 'before_post_crash'

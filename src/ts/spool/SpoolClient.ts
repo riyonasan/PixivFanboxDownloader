@@ -17,7 +17,7 @@ export interface SavedReceipt {
 }
 
 export interface SpoolFile extends ProofFile {
-  registration: { fileName: string; website: string; tags: string[] }
+  registration: { fileName: string; website: string; tags: string[]; imageIndex?: number }
 }
 
 export class SpoolAuthError extends Error {

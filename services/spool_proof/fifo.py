@@ -31,8 +31,11 @@ def verify_file(path, job):
 
 
 def validate_spec(spec, post_id):
-    if not isinstance(spec, dict) or set(spec) != {'fileName', 'website', 'tags'}:
+    required = {'fileName', 'website', 'tags'}
+    if not isinstance(spec, dict) or not required <= spec.keys() or not spec.keys() <= required | {'imageIndex'}:
         raise ValueError('Invalid registration information')
+    if 'imageIndex' in spec and (type(spec['imageIndex']) is not int or spec['imageIndex'] < 0):
+        raise ValueError('Invalid image index')
     name, website, tags = (spec[key] for key in ('fileName', 'website', 'tags'))
     if not isinstance(name, str) or not 1 <= len(name) <= 4096:
         raise ValueError('Invalid registration name')
@@ -59,6 +62,8 @@ class Queue:
         self.db.executescript('''
             CREATE TABLE IF NOT EXISTS registration_specs (
                 receipt_key TEXT PRIMARY KEY, spec TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS eagle_order_bases (
+                post_id TEXT PRIMARY KEY, base_time INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS eagle_queue (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT, receipt_key TEXT NOT NULL UNIQUE,
                 state TEXT NOT NULL, next_attempt REAL NOT NULL DEFAULT 0,
@@ -79,6 +84,9 @@ class Queue:
         # The first accepted import specification is immutable, including across config changes.
         with self.db:
             self.db.execute('INSERT OR IGNORE INTO registration_specs VALUES (?,?)', (key, encoded))
+            if 'imageIndex' in spec:
+                self.db.execute('INSERT OR IGNORE INTO eagle_order_bases VALUES (?,?)',
+                                (post_id, int(self.clock()*1000)))
 
     def enqueue_saved(self, key):
         with self.db:
@@ -194,6 +202,12 @@ class Queue:
         attempt = job['attempt']+1
         marker = 'fanbox-spool:'+key+':'+str(attempt)
         payload = {**payload, 'annotation':marker}
+        if 'imageIndex' in job['spec']:
+            base = self.db.execute('''SELECT base_time FROM eagle_order_bases
+                WHERE post_id=(SELECT post_id FROM receipts WHERE key=?)''', (key,)).fetchone()
+            # Eagle calls its import/addition date modificationTime. Newest-first
+            # display puts the smallest image index first, regardless of completion order.
+            payload['modificationTime'] = base['base_time'] - job['spec']['imageIndex']*1000
         intent = json.dumps({'payload':payload,'library':library,'marker':marker},ensure_ascii=False,sort_keys=True)
         with self.db:
             self.db.execute('INSERT INTO eagle_attempts VALUES (?,?,?)',(key,attempt,intent))

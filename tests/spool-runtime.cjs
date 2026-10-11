@@ -117,6 +117,7 @@ test('mini save bypasses Eagle checks and uses the generated name with stable so
   assert.equal(h.messages[0].file.fileId,'image:abc')
   assert.equal(h.messages[0].file.fileName,'123-abc.png')
   assert.equal(h.messages[0].file.registration.fileName,'FANBOX/作者/日付-投稿/日付-投稿-001.png')
+  assert.equal(h.messages[0].file.registration.imageIndex,1)
   assert.match(h.failures[0],/保存済み.*登録待ち/)
 })
 
@@ -128,6 +129,7 @@ test('PNG file attachments retain the file API identity across proof and regular
   await object.download(arg)
   assert.equal(h.messages[0].file.fileId,'file:abc')
   assert.equal(h.messages[0].file.fileName,'attachment.png')
+  assert.equal(h.messages[0].file.registration.imageIndex,undefined)
 })
 for(const eagle of [false,true]) test('existing download route is preserved: Eagle='+eagle,async()=>{
   const h=downloadHarness(false,eagle)
