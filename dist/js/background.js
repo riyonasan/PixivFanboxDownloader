@@ -119,12 +119,22 @@ const totalDownload = new TotalDownload();
 __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _AutoTypes__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ./AutoTypes */ "./src/ts/auto/AutoTypes.ts");
 /* harmony import */ var _Ntfy__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ./Ntfy */ "./src/ts/auto/Ntfy.ts");
+/* harmony import */ var _spool_SpoolRuntime__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ../spool/SpoolRuntime */ "./src/ts/spool/SpoolRuntime.ts");
+
 
 
 const alarmName = 'fanboxAutoCheck';
+const restrictedRetryMs = 24 * 60 * 60 * 1000;
 let checking = false;
 let starting = false;
 let startAgain = false;
+// Serialize storage read/modify/write operations from scans, results and the UI.
+let stateUpdate = Promise.resolve();
+function updateAutoState(update) {
+    const result = stateUpdate.then(update);
+    stateUpdate = result.catch(() => { });
+    return result;
+}
 async function request(url) {
     const response = await fetch(url, { credentials: 'include' });
     if (!response.ok) {
@@ -195,31 +205,40 @@ async function scanProfiles() {
             const until = Date.now();
             try {
                 const found = await findNewPosts(tabId, profile, until, delayMs);
-                const latest = await chrome.storage.local.get([
-                    _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey,
-                    _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey,
-                ]);
-                const currentProfiles = (latest[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey] ||
-                    []);
-                const current = currentProfiles.find((item) => item.creatorId === profile.creatorId);
-                if (!current)
-                    continue;
-                current.since = until;
-                const pending = (latest[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []);
-                for (const post of found.reverse()) {
-                    if (!pending.some((item) => item.postId === post.postId))
-                        pending.push(post);
-                }
-                await chrome.storage.local.set({
-                    [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey]: currentProfiles,
-                    [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: pending,
-                });
-                const previousStatus = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey);
-                await chrome.storage.local.set({
-                    [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey]: {
-                        ...previousStatus[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey],
-                        lastCheckedAt: Date.now(),
-                    },
+                await updateAutoState(async () => {
+                    const latest = await chrome.storage.local.get([
+                        _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey,
+                        _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey,
+                    ]);
+                    const currentProfiles = (latest[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey] ||
+                        []);
+                    const current = currentProfiles.find((item) => item.creatorId === profile.creatorId);
+                    // Settings may have changed while the request was in flight. Scan
+                    // again with those settings without advancing the old cursor.
+                    if (!current ||
+                        current.since !== profile.since ||
+                        current.free !== profile.free ||
+                        current.pay !== profile.pay ||
+                        current.minFee !== profile.minFee ||
+                        current.maxFee !== profile.maxFee)
+                        return;
+                    current.since = until;
+                    const pending = (latest[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []);
+                    for (const post of found.reverse()) {
+                        if (!pending.some((item) => item.postId === post.postId))
+                            pending.push(post);
+                    }
+                    await chrome.storage.local.set({
+                        [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey]: currentProfiles,
+                        [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: pending,
+                    });
+                    const previousStatus = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey);
+                    await chrome.storage.local.set({
+                        [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey]: {
+                            ...previousStatus[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey],
+                            lastCheckedAt: Date.now(),
+                        },
+                    });
                 });
             }
             catch (error) {
@@ -236,12 +255,14 @@ async function scanProfiles() {
         if (tabId !== undefined) {
             await chrome.tabs.remove(tabId).catch(() => { });
         }
-        const previousStatus = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey);
-        await chrome.storage.local.set({
-            [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey]: {
-                ...previousStatus[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey],
-                lastError: scanError,
-            },
+        await updateAutoState(async () => {
+            const previousStatus = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey);
+            await chrome.storage.local.set({
+                [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey]: {
+                    ...previousStatus[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey],
+                    lastError: scanError,
+                },
+            });
         });
     }
 }
@@ -293,27 +314,31 @@ async function sendStart(active, profile) {
     throw new Error('Automatic post tab did not finish loading');
 }
 async function startNextPostInternal() {
+    if (!(await (0,_spool_SpoolRuntime__WEBPACK_IMPORTED_MODULE_2__.canStartSpoolCollection)()))
+        return;
     if (await clearStaleActive())
         return;
-    const stored = await chrome.storage.local.get([
-        _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey,
-        _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey,
-        'fanboxSetting',
-    ]);
-    const profiles = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey] || []);
-    const pending = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []);
-    const remaining = pending.filter((item) => {
-        const profile = profiles.find((value) => value.creatorId === item.creatorId);
-        return profile && (0,_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.matchesAutoFee)(profile, item.fee);
+    const { remaining, settings } = await updateAutoState(async () => {
+        const stored = await chrome.storage.local.get([
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey,
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey,
+            'fanboxSetting',
+        ]);
+        const profiles = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey] || []);
+        const pending = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []);
+        const remaining = pending.filter((item) => {
+            const profile = profiles.find((value) => value.creatorId === item.creatorId);
+            return profile && (0,_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.matchesAutoFee)(profile, item.fee);
+        });
+        if (remaining.length !== pending.length) {
+            await chrome.storage.local.set({ [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: remaining });
+        }
+        return { remaining, settings: stored.fanboxSetting };
     });
-    if (remaining.length !== pending.length) {
-        await chrome.storage.local.set({ [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: remaining });
-    }
     const task = remaining.find((item) => !item.retryAfter || item.retryAfter <= Date.now());
     if (!task)
         return;
-    const profile = profiles.find((item) => item.creatorId === task.creatorId);
-    const currentSettings = stored.fanboxSetting;
+    const currentSettings = settings;
     if (currentSettings?.saveToEagle) {
         try {
             await request('http://localhost:41595/api/application/info');
@@ -323,14 +348,39 @@ async function startNextPostInternal() {
             return;
         }
     }
-    const tab = await chrome.tabs.create({
-        url: `https://www.fanbox.cc/@${encodeURIComponent(task.creatorId)}/posts/${encodeURIComponent(task.postId)}`,
-        active: false,
+    // Eagle can take time to respond. Recheck saved settings before opening
+    // a post, so disabling paid posts while waiting takes effect immediately.
+    const next = await updateAutoState(async () => {
+        const latest = await chrome.storage.local.get([
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey,
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey,
+        ]);
+        const profile = (latest[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey] || []).find((item) => item.creatorId === task.creatorId);
+        const current = (latest[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []).find((item) => item.postId === task.postId);
+        if (!profile ||
+            !current ||
+            !(0,_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.matchesAutoFee)(profile, current.fee) ||
+            (current.retryAfter && current.retryAfter > Date.now())) {
+            startAgain = true;
+            return;
+        }
+        const tab = await chrome.tabs.create({
+            url: `https://www.fanbox.cc/@${encodeURIComponent(current.creatorId)}/posts/${encodeURIComponent(current.postId)}`,
+            active: false,
+        });
+        if (tab.id === undefined)
+            throw new Error('Automatic post tab has no ID');
+        const active = {
+            tabId: tab.id,
+            task: current,
+            startedAt: Date.now(),
+        };
+        await chrome.storage.local.set({ [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoActiveKey]: active });
+        return { active, profile };
     });
-    if (tab.id === undefined)
-        throw new Error('Automatic post tab has no ID');
-    const active = { tabId: tab.id, task, startedAt: Date.now() };
-    await chrome.storage.local.set({ [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoActiveKey]: active });
+    if (!next)
+        return;
+    const { active, profile } = next;
     try {
         await sendStart(active, profile);
     }
@@ -370,6 +420,8 @@ async function runAutoCheck() {
         return;
     checking = true;
     try {
+        if (!(await (0,_spool_SpoolRuntime__WEBPACK_IMPORTED_MODULE_2__.prepareSpoolCollection)()))
+            return;
         await scanProfiles();
         await startNextPost();
     }
@@ -381,40 +433,50 @@ async function runAutoCheck() {
     }
 }
 async function finishPost(message) {
-    const active = await getActive();
-    if (!active ||
-        active.task.creatorId !== message.creatorId ||
-        active.task.postId !== message.postId ||
-        active.startedAt !== message.startedAt)
+    const active = await updateAutoState(async () => {
+        const active = await getActive();
+        if (!active ||
+            active.task.creatorId !== message.creatorId ||
+            active.task.postId !== message.postId ||
+            active.startedAt !== message.startedAt)
+            return;
+        const stored = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey);
+        const pending = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []);
+        await chrome.storage.local.set({
+            [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: message.success && !message.skipped
+                ? pending.filter((item) => item.postId !== message.postId)
+                : pending.map((item) => item.postId === message.postId
+                    ? {
+                        ...item,
+                        restricted: !!message.skipped,
+                        retryAfter: Date.now() +
+                            (message.skipped ? restrictedRetryMs : 60 * 60 * 1000),
+                    }
+                    : item),
+        });
+        const previousStatus = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey);
+        const status = (previousStatus[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey] || {});
+        await chrome.storage.local.set({
+            [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey]: {
+                ...status,
+                ...(message.skipped
+                    ? {
+                        lastError: status.lastError?.startsWith(`${message.creatorId}:`)
+                            ? ''
+                            : status.lastError,
+                    }
+                    : message.success
+                        ? { lastCompletedAt: Date.now(), lastError: '' }
+                        : {
+                            lastError: `${message.creatorId}: 取り込みに失敗しました。次回再試行します。`,
+                        }),
+            },
+        });
+        await chrome.storage.local.remove(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoActiveKey);
+        return active;
+    });
+    if (!active)
         return;
-    const stored = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey);
-    const pending = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []);
-    await chrome.storage.local.set({
-        [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: message.success || message.skipped
-            ? pending.filter((item) => item.postId !== message.postId)
-            : pending.map((item) => item.postId === message.postId
-                ? { ...item, retryAfter: Date.now() + 60 * 60 * 1000 }
-                : item),
-    });
-    const previousStatus = await chrome.storage.local.get(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey);
-    const status = (previousStatus[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey] || {});
-    await chrome.storage.local.set({
-        [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoStatusKey]: {
-            ...status,
-            ...(message.skipped
-                ? {
-                    lastError: status.lastError?.startsWith(`${message.creatorId}:`)
-                        ? ''
-                        : status.lastError,
-                }
-                : message.success
-                    ? { lastCompletedAt: Date.now(), lastError: '' }
-                    : {
-                        lastError: `${message.creatorId}: 取り込みに失敗しました。次回再試行します。`,
-                    }),
-        },
-    });
-    await chrome.storage.local.remove(_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoActiveKey);
     await new Promise((resolve) => setTimeout(resolve, 1000));
     await chrome.tabs.remove(active.tabId).catch(() => { });
     if (!message.skipped) {
@@ -422,12 +484,77 @@ async function finishPost(message) {
     }
     void startNextPost().catch((error) => console.error('Automatic FANBOX import failed', error));
 }
-chrome.runtime.onMessage.addListener((message) => {
+async function retryRestrictedPosts(creatorId) {
+    const count = await updateAutoState(async () => {
+        const stored = await chrome.storage.local.get([
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey,
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey,
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoActiveKey,
+        ]);
+        const profiles = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey] || []);
+        const profile = profiles.find((item) => item.creatorId === creatorId);
+        const active = stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoActiveKey];
+        let count = 0;
+        const pending = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []).map((item) => {
+            if (item.creatorId === creatorId &&
+                item.restricted &&
+                profile &&
+                (0,_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.matchesAutoFee)(profile, item.fee) &&
+                active?.task.postId !== item.postId) {
+                count++;
+                return { ...item, retryAfter: 0 };
+            }
+            return item;
+        });
+        await chrome.storage.local.set({ [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: pending });
+        return count;
+    });
+    void startNextPost().catch((error) => console.error('Automatic FANBOX retry failed', error));
+    return count;
+}
+async function saveProfiles(profiles) {
+    return updateAutoState(async () => {
+        const stored = await chrome.storage.local.get([
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey,
+            _AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey,
+        ]);
+        const previous = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey] || []);
+        const next = profiles.map((profile) => ({
+            ...profile,
+            since: previous.find((item) => item.creatorId === profile.creatorId)?.since ??
+                Date.now(),
+        }));
+        const pending = (stored[_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey] || []).filter((item) => {
+            const profile = next.find((value) => value.creatorId === item.creatorId);
+            return profile && (0,_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.matchesAutoFee)(profile, item.fee);
+        });
+        await chrome.storage.local.set({
+            [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey]: next,
+            [_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoPendingKey]: pending,
+        });
+        return next;
+    });
+}
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.msg === 'auto_result') {
         void finishPost(message).catch((error) => console.error('Automatic FANBOX result could not be saved', error));
     }
     else if (message.msg === 'auto_check_now') {
         void runAutoCheck();
+    }
+    else if (message.msg === 'auto_retry_restricted' &&
+        typeof message.creatorId === 'string') {
+        void retryRestrictedPosts(message.creatorId)
+            .then((count) => sendResponse({ count }))
+            .catch((error) => sendResponse({ error: String(error) }));
+        return true;
+    }
+    else if (message.msg === 'auto_save_profiles' &&
+        Array.isArray(message.profiles)) {
+        void saveProfiles(message.profiles)
+            .then((profiles) => sendResponse({ profiles }))
+            .catch((error) => sendResponse({ error: String(error) }));
+        return true;
     }
 });
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -798,6 +925,417 @@ const eagle = new Eagle();
 
 
 
+/***/ },
+
+/***/ "./src/ts/spool/SpoolBackground.ts"
+/*!*****************************************!*\
+  !*** ./src/ts/spool/SpoolBackground.ts ***!
+  \*****************************************/
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony import */ var _SpoolClient__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ./SpoolClient */ "./src/ts/spool/SpoolClient.ts");
+/* harmony import */ var _SpoolRuntime__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ./SpoolRuntime */ "./src/ts/spool/SpoolRuntime.ts");
+/* harmony import */ var _TotalDownload__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ../TotalDownload */ "./src/ts/TotalDownload.ts");
+
+
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (!['spool_proof_save', 'spool_proof_options', 'spool_save', 'spool_apply', 'spool_status', 'spool_resubmit'].includes(message?.msg))
+        return false;
+    let source;
+    try {
+        source = new URL(sender.url || '');
+        if (sender.id !== chrome.runtime.id || sender.frameId !== 0 || sender.tab?.id === undefined ||
+            source.protocol !== 'https:' ||
+            !(source.hostname === 'fanbox.cc' || source.hostname.endsWith('.fanbox.cc')))
+            return false;
+    }
+    catch {
+        return false;
+    }
+    if (message.msg === 'spool_proof_options') {
+        void chrome.runtime.openOptionsPage();
+        return false;
+    }
+    if (['spool_apply', 'spool_status', 'spool_resubmit'].includes(message.msg)) {
+        const action = async () => {
+            if (message.msg === 'spool_status')
+                return (0,_SpoolRuntime__WEBPACK_IMPORTED_MODULE_1__.spoolRequest)('/v1/status', undefined, true);
+            if (message.msg === 'spool_resubmit') {
+                if (!/^[a-f0-9]{64}$/.test(message.receiptId) || message.confirmNotRegistered !== true)
+                    throw new Error('登録されていないことの確認が必要です');
+                return (0,_SpoolRuntime__WEBPACK_IMPORTED_MODULE_1__.spoolRequest)(`/v1/held/${message.receiptId}/resubmit`, { confirmNotRegistered: true }, true);
+            }
+            const stored = await chrome.storage.local.get(['fanboxSetting', 'autoCreatorProfiles']);
+            const localSettings = (stored.fanboxSetting || {});
+            const settings = {};
+            for (const key of _SpoolRuntime__WEBPACK_IMPORTED_MODULE_1__.acquisitionKeys)
+                if (key in localSettings)
+                    settings[key] = localSettings[key];
+            const profiles = (stored.autoCreatorProfiles || []).map(({ creatorId, name, free, pay, minFee, maxFee }) => ({ creatorId, name, free, pay, minFee, maxFee }));
+            const applied = await (0,_SpoolRuntime__WEBPACK_IMPORTED_MODULE_1__.spoolRequest)('/v1/config', { settings, profiles }, true);
+            const readback = await (0,_SpoolRuntime__WEBPACK_IMPORTED_MODULE_1__.spoolRequest)('/v1/config', undefined, true);
+            if (!applied.revision || applied.revision !== readback.revision)
+                throw new Error('設定の読み戻しが一致しません。もう一度確認してください');
+            return readback;
+        };
+        void action().then(result => sendResponse({ result })).catch(() => sendResponse({ error: 'ミニPCとの接続または設定の読み戻しに失敗しました。接続設定と状態を確認してください' }));
+        return true;
+    }
+    const file = message.file;
+    const postId = /\/posts\/(\d+)(?:\/|$)/.exec(source.pathname)?.[1];
+    if (!file || file.postId !== postId) {
+        sendResponse({ error: '現在の投稿に属するファイルを選択してください' });
+        return false;
+    }
+    const save = async () => {
+        if (message.msg !== 'spool_save')
+            return (0,_SpoolClient__WEBPACK_IMPORTED_MODULE_0__.saveProofFile)(file);
+        if ((await (0,_SpoolRuntime__WEBPACK_IMPORTED_MODULE_1__.localSpoolConfig)()).role !== 'collector' ||
+            !(await chrome.storage.local.get('spoolCollectionEnabled')).spoolCollectionEnabled)
+            throw new Error('この専用環境の収集は停止中です');
+        if (typeof message.id !== 'string' || !Number.isSafeInteger(message.taskBatch) || typeof message.originalURL !== 'string')
+            throw new Error('保存タスクの情報が不正です');
+        const receipt = await (0,_SpoolClient__WEBPACK_IMPORTED_MODULE_0__.saveSpoolFile)(file, async (bytes) => {
+            _TotalDownload__WEBPACK_IMPORTED_MODULE_2__.totalDownload.addDownload(bytes);
+            await (0,_SpoolRuntime__WEBPACK_IMPORTED_MODULE_1__.notifySpoolAuthentication)(false);
+        });
+        await chrome.tabs.sendMessage(sender.tab.id, {
+            msg: 'downloaded', data: { url: message.originalURL, id: message.id, tabId: sender.tab.id,
+                uuid: false, size: receipt.size, source: 'spool', taskBatch: message.taskBatch },
+        });
+        return receipt;
+    };
+    void save()
+        .then((receipt) => sendResponse({ receipt }))
+        .catch((error) => {
+        if (error instanceof _SpoolClient__WEBPACK_IMPORTED_MODULE_0__.SpoolAuthError)
+            void (0,_SpoolRuntime__WEBPACK_IMPORTED_MODULE_1__.notifySpoolAuthentication)(true);
+        sendResponse({ error: error instanceof Error ? error.message : '保存に失敗しました' });
+    });
+    return true;
+});
+
+
+/***/ },
+
+/***/ "./src/ts/spool/SpoolClient.ts"
+/*!*************************************!*\
+  !*** ./src/ts/spool/SpoolClient.ts ***!
+  \*************************************/
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   SpoolAuthError: () => (/* binding */ SpoolAuthError),
+/* harmony export */   saveProofFile: () => (/* binding */ saveProofFile),
+/* harmony export */   saveSpoolFile: () => (/* binding */ saveSpoolFile)
+/* harmony export */ });
+class SpoolAuthError extends Error {
+    constructor() { super('FANBOXの認証と閲覧権限を専用ブラウザで確認してください'); }
+}
+const base = 'http://127.0.0.1:18096';
+const chunkSize = 1024 * 1024;
+const maxSize = 64 * chunkSize;
+let saving = false;
+function validateFile(file, production = false) {
+    if (!file ||
+        typeof file.postId !== 'string' ||
+        !/^\d{1,30}$/.test(file.postId) ||
+        typeof file.fileId !== 'string' ||
+        !/^(file|image):[A-Za-z0-9_-]{1,120}$/.test(file.fileId) ||
+        typeof file.fileName !== 'string' ||
+        !file.fileName.length || file.fileName.length > 512 ||
+        /[\x00-\x1f]/.test(file.fileName) ||
+        (file.expectedSize !== null &&
+            (!Number.isSafeInteger(file.expectedSize) || file.expectedSize < 0 || file.expectedSize > (production ? 2 ** 40 : maxSize))))
+        throw new Error(production ? '保存ファイルの情報が不正です' : '保存実証のファイル情報が不正です（上限64 MiB）');
+    const url = new URL(file.url);
+    if (production && /^file:text-(txt|html)$/.test(file.fileId) &&
+        /^data:text\/(plain|html)(?:;charset=[^;,]+)?;base64,/.test(file.url))
+        return;
+    const cover = production && file.fileId === 'image:cover' && url.hostname === 'pixiv.pximg.net' &&
+        url.pathname.startsWith(`/fanbox/public/images/post/${file.postId}/cover/`) && !url.search && !url.hash;
+    if (url.protocol !== 'https:' || url.username || url.password ||
+        !(url.hostname === 'fanbox.cc' || url.hostname.endsWith('.fanbox.cc') || cover)) {
+        throw new Error('保存実証はFANBOX内の添付ファイルだけが対象です');
+    }
+}
+function savedReceipt(value, expectedSize, production = false) {
+    const item = value;
+    if (!item || item.state !== 'saved' || !(production
+        ? ['pending', 'retry', 'submitting', 'checking', 'held', 'done'].includes(item.eagleState)
+        : item.eagleState === 'not_submitted') ||
+        !/^[a-f0-9]{64}$/.test(item.receiptId) || !/^[a-f0-9]{64}$/.test(item.sha256) ||
+        !Number.isSafeInteger(item.size) || item.size < 0 || item.size > (production ? 2 ** 40 : maxSize) ||
+        (expectedSize !== null && item.size !== expectedSize)) {
+        throw new Error('補助サービスから有効な保存確認が返りませんでした');
+    }
+    return item;
+}
+async function saveProofFile(file) {
+    return saveFile(file);
+}
+let queued = Promise.resolve();
+function saveSpoolFile(file, authenticated) {
+    const result = queued.then(() => saveFile(file, true, authenticated));
+    queued = result.catch(() => { });
+    return result;
+}
+async function saveFile(file, production = false, authenticated) {
+    validateFile(file, production);
+    const limit = production ? 2 ** 40 : maxSize;
+    if (saving)
+        throw new Error('ほかの保存実証が進行中です');
+    saving = true;
+    try {
+        const config = await chrome.storage.local.get('spoolProofToken');
+        let token = config.spoolProofToken;
+        // Optional per-machine provisioning; this private file is never packaged.
+        // This avoids copying service credentials through the user's clipboard/chat.
+        if (token === undefined) {
+            try {
+                const local = await fetch(chrome.runtime.getURL('spool-proof-local.json'), {
+                    credentials: 'omit', cache: 'no-store',
+                });
+                if (local.ok)
+                    token = (await local.json()).token;
+            }
+            catch {
+                // Normal for an extension installed without local provisioning.
+            }
+            if (typeof token === 'string' && /^[A-Za-z0-9_-]{32,128}$/.test(token)) {
+                await chrome.storage.local.set({ spoolProofToken: token });
+            }
+        }
+        if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
+            throw new Error('拡張機能の保存実証設定でAPIトークンを設定してください');
+        }
+        const request = async (path, body, offset) => {
+            const binary = body instanceof Uint8Array;
+            const response = await fetch(base + path, {
+                method: binary ? 'PUT' : 'POST',
+                credentials: 'omit',
+                redirect: 'error',
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': binary ? 'application/octet-stream' : 'application/json',
+                    ...(offset === undefined ? {} : { 'X-Offset': String(offset) }),
+                },
+                body: binary ? body.slice().buffer : JSON.stringify(body),
+                signal: AbortSignal.timeout(25000),
+            });
+            if (!response.ok) {
+                // Do not echo response bodies or authenticated source URLs into logs.
+                throw new Error(`補助サービスへの保存に失敗しました（HTTP ${response.status}）`);
+            }
+            return response.json();
+        };
+        const { url: sourceURL, ...metadata } = file;
+        const session = await request('/v1/uploads', metadata);
+        if (session.state === 'saved')
+            return savedReceipt(session, file.expectedSize, production);
+        if (session.state !== 'uploading' || !/^[a-f0-9]{32}$/.test(session.uploadId) ||
+            session.chunkSize !== chunkSize || (production ? session.maxSize !== limit : session.maxSize < limit)) {
+            throw new Error('補助サービスの受付応答が不正です');
+        }
+        const response = await fetch(sourceURL, {
+            credentials: 'include', redirect: 'error', signal: AbortSignal.timeout(production ? 1800000 : 240000),
+        });
+        if (production && [401, 403].includes(response.status))
+            throw new SpoolAuthError();
+        if (!response.ok || !response.body) {
+            throw new Error(`FANBOXファイルを取得できませんでした（HTTP ${response.status}）`);
+        }
+        if (file.fileId.startsWith('image:') &&
+            !response.headers.get('content-type')?.toLowerCase().startsWith('image/')) {
+            await response.body.cancel();
+            if (production)
+                throw new SpoolAuthError();
+            throw new Error('画像以外の応答が返りました。ログインと閲覧権限を確認してください');
+        }
+        const lengthHeader = response.headers.get('content-length');
+        const contentLength = lengthHeader === null ? null : Number(lengthHeader);
+        if (contentLength !== null && (!Number.isSafeInteger(contentLength) || contentLength > limit ||
+            contentLength < 0 || (file.expectedSize !== null && contentLength !== file.expectedSize))) {
+            await response.body.cancel();
+            throw new Error('FANBOXファイルのサイズが実証の条件と一致しません');
+        }
+        const reader = response.body.getReader();
+        let size = 0;
+        try {
+            while (true) {
+                const next = await reader.read();
+                if (next.done)
+                    break;
+                for (let start = 0; start < next.value.length; start += chunkSize) {
+                    const bytes = next.value.slice(start, start + chunkSize);
+                    if (size + bytes.length > limit ||
+                        (file.expectedSize !== null && size + bytes.length > file.expectedSize)) {
+                        throw new Error('ファイルサイズが実証の上限を超えました');
+                    }
+                    const accepted = await request(`/v1/uploads/${session.uploadId}`, bytes, size);
+                    if (accepted.offset !== size + bytes.length)
+                        throw new Error('転送位置の確認に失敗しました');
+                    size += bytes.length;
+                }
+            }
+        }
+        finally {
+            await reader.cancel().catch(() => { });
+        }
+        if ((file.expectedSize !== null && size !== file.expectedSize) ||
+            (contentLength !== null && size !== contentLength)) {
+            throw new Error('FANBOXファイルの取得が完了していません');
+        }
+        const receipt = savedReceipt(await request(`/v1/uploads/${session.uploadId}/commit`, { size }), size, production);
+        await authenticated?.(size).catch(() => { });
+        return receipt;
+    }
+    finally {
+        saving = false;
+    }
+}
+
+
+/***/ },
+
+/***/ "./src/ts/spool/SpoolRuntime.ts"
+/*!**************************************!*\
+  !*** ./src/ts/spool/SpoolRuntime.ts ***!
+  \**************************************/
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   acquisitionKeys: () => (/* binding */ acquisitionKeys),
+/* harmony export */   canStartSpoolCollection: () => (/* binding */ canStartSpoolCollection),
+/* harmony export */   localSpoolConfig: () => (/* binding */ localSpoolConfig),
+/* harmony export */   notifySpoolAuthentication: () => (/* binding */ notifySpoolAuthentication),
+/* harmony export */   prepareSpoolCollection: () => (/* binding */ prepareSpoolCollection),
+/* harmony export */   spoolRequest: () => (/* binding */ spoolRequest),
+/* harmony export */   validateEndpoint: () => (/* binding */ validateEndpoint)
+/* harmony export */ });
+/* harmony import */ var _auto_AutoTypes__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ../auto/AutoTypes */ "./src/ts/auto/AutoTypes.ts");
+
+const acquisitionKeys = (`image music video compressed ps other free pay feeSwitch idRangeSwitch
+postDate saveLink saveText saveComment autoStartDownload savePostCover zeroPadding deduplication
+unifiedURL titleMustTextSwitch titleCannotTextSwitch fileNameIncludeSwitch fileNameExcludeSwitch
+totalDownloadLimitSwitch fee idRangeInput postDateStart postDateEnd downloadThread zeroPaddingLength
+downloadInterval crawlInterval totalDownloadLimit totalDownloadLimitByte feeRange idRange textFormat
+userSetName dateFormat nameruleForNonImages imageSize titleMustText titleCannotText fileNameInclude fileNameExclude`).split(/\s+/);
+let local;
+function localSpoolConfig() {
+    local ??= fetch(chrome.runtime.getURL('spool-proof-local.json'), { credentials: 'omit', cache: 'no-store' })
+        .then(async (response) => response.ok ? response.json() : {})
+        .catch(() => ({}));
+    return local;
+}
+function validateEndpoint(value) {
+    const url = new URL(value);
+    const parts = url.hostname.split('.').map(Number);
+    if (url.protocol !== 'http:' || url.port !== '18096' || url.username || url.password ||
+        url.search || url.hash || url.pathname !== '/' || parts.length !== 4 ||
+        parts.some(part => !Number.isInteger(part) || part < 0 || part > 255) ||
+        !(url.hostname === '127.0.0.1' || parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127)) {
+        throw new Error('補助サービスのTailnet IPv4アドレスとポート18096を指定してください');
+    }
+    return url.origin;
+}
+async function spoolRequest(path, body, remote = false) {
+    const stored = await chrome.storage.local.get(['spoolProofToken', 'spoolRemoteURL']);
+    const config = await localSpoolConfig();
+    const token = stored.spoolProofToken || config.token;
+    if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
+        throw new Error('補助サービスのAPIトークンを設定してください');
+    }
+    const base = remote ? validateEndpoint(typeof stored.spoolRemoteURL === 'string' ? stored.spoolRemoteURL : config.remoteURL || '') : 'http://127.0.0.1:18096';
+    const response = await fetch(base + path, {
+        method: body === undefined ? 'GET' : 'POST', credentials: 'omit', redirect: 'error',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(25000),
+    });
+    if (!response.ok)
+        throw new Error(`補助サービスへの接続に失敗しました（HTTP ${response.status}）`);
+    return response.json();
+}
+// Called before scanning, under the scheduler's existing checking flag.
+async function prepareSpoolCollection() {
+    const role = (await localSpoolConfig()).role;
+    if (role === 'manager')
+        return false;
+    if (role !== 'collector')
+        return true;
+    const stored = await chrome.storage.local.get('spoolCollectionEnabled');
+    if (!stored.spoolCollectionEnabled)
+        return false;
+    const configuration = await spoolRequest('/v1/config');
+    if (!configuration.value || !configuration.revision)
+        return false;
+    {
+        const current = await chrome.storage.local.get(['spoolAppliedRevision', 'fanboxSetting', _auto_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey]);
+        const currentSettings = (current.fanboxSetting || {});
+        if (current.spoolAppliedRevision !== configuration.revision || !currentSettings.saveToSpool || currentSettings.saveToEagle) {
+            const previous = (current[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey] || []);
+            const profiles = configuration.value.profiles.map((profile) => ({
+                ...profile, since: previous.find(item => item.creatorId === profile.creatorId)?.since ?? Date.now(),
+            }));
+            const filtered = {};
+            for (const key of acquisitionKeys) {
+                if (key in configuration.value.settings)
+                    filtered[key] = configuration.value.settings[key];
+            }
+            // Do not write pending posts, active tasks, download history or queue state.
+            await chrome.storage.local.set({
+                fanboxSetting: { ...currentSettings, ...filtered, saveToEagle: false, saveToSpool: true },
+                [_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_0__.autoProfilesKey]: profiles, spoolAppliedRevision: configuration.revision,
+            });
+        }
+    }
+    await spoolRequest('/v1/config/applied', { revision: configuration.revision });
+    return canStartSpoolCollection();
+}
+async function canStartSpoolCollection() {
+    const role = (await localSpoolConfig()).role;
+    if (role === 'manager')
+        return false;
+    if (role !== 'collector')
+        return true;
+    const stored = await chrome.storage.local.get(['spoolCollectionEnabled', 'fanboxSetting']);
+    const settings = stored.fanboxSetting;
+    if (!stored.spoolCollectionEnabled || !settings?.saveToSpool || settings.saveToEagle)
+        return false;
+    try {
+        return !(await spoolRequest('/v1/health')).acquisitionPaused;
+    }
+    catch {
+        return false;
+    }
+}
+async function notifySpoolAuthentication(expired) {
+    const value = expired ? 'expired' : 'ready';
+    const previous = (await chrome.storage.local.get('spoolAuthenticationState')).spoolAuthenticationState;
+    if (previous === value)
+        return;
+    await chrome.storage.local.set({ spoolAuthenticationState: value });
+    if (!expired && previous === undefined)
+        return;
+    try {
+        const config = await fetch(chrome.runtime.getURL('ntfy-config.json'), { credentials: 'omit' });
+        if (!config.ok)
+            return;
+        const url = (await config.json()).url;
+        if (!url)
+            return;
+        await fetch(url, { method: 'POST', credentials: 'omit', headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+            body: expired ? 'FANBOX: 認証が切れた可能性があります。専用ブラウザでログインと閲覧権限を確認してください。' : 'FANBOX: 認証付きファイル取得が再び成功しました。',
+            signal: AbortSignal.timeout(10000) });
+    }
+    catch { /* A notification failure must not discard a saved file. */ }
+}
+
+
 /***/ }
 
 /******/ 	});
@@ -864,6 +1402,8 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _TotalDownload__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ./TotalDownload */ "./src/ts/TotalDownload.ts");
 /* harmony import */ var _eagle_Eagle__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ./eagle/Eagle */ "./src/ts/eagle/Eagle.ts");
 /* harmony import */ var _auto_AutoScheduler__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ./auto/AutoScheduler */ "./src/ts/auto/AutoScheduler.ts");
+/* harmony import */ var _spool_SpoolBackground__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! ./spool/SpoolBackground */ "./src/ts/spool/SpoolBackground.ts");
+
 
 
 

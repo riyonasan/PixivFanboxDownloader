@@ -1487,6 +1487,17 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
         this.init();
     }
     crawlFlag = 'supporting';
+    autoManagerListener;
+    clearAutoManagerListener() {
+        if (this.autoManagerListener) {
+            chrome.storage.onChanged.removeListener(this.autoManagerListener);
+            this.autoManagerListener = undefined;
+        }
+    }
+    destroy() {
+        this.clearAutoManagerListener();
+        _Tools__WEBPACK_IMPORTED_MODULE_2__.Tools.clearSlot('crawlBtns');
+    }
     // 添加中间按钮
     addCrawlBtns() {
         if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type === _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.list.Following ||
@@ -1532,14 +1543,14 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
         const slot = _Tools__WEBPACK_IMPORTED_MODULE_2__.Tools.findSlot('crawlBtns');
         const existing = slot.querySelector('.autoCreatorManager');
         if (existing) {
+            this.clearAutoManagerListener();
             existing.remove();
             return;
         }
         button.disabled = true;
         try {
             const creators = currentPage === _PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.list.Following
-                ? (await _API__WEBPACK_IMPORTED_MODULE_4__.API.request('https://api.fanbox.cc/creator.listFollowing'))
-                    .body.creators.map((item) => ({
+                ? (await _API__WEBPACK_IMPORTED_MODULE_4__.API.request('https://api.fanbox.cc/creator.listFollowing')).body.creators.map((item) => ({
                     creatorId: item.creatorId,
                     name: item.user.name,
                 }))
@@ -1553,7 +1564,10 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
             const uniqueCreators = Array.from(new Map(creators.map((item) => [item.creatorId, item])).values());
             for (const profile of profiles) {
                 if (!uniqueCreators.some((item) => item.creatorId === profile.creatorId)) {
-                    uniqueCreators.push({ creatorId: profile.creatorId, name: profile.name });
+                    uniqueCreators.push({
+                        creatorId: profile.creatorId,
+                        name: profile.name,
+                    });
                 }
             }
             if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type !== currentPage)
@@ -1564,16 +1578,27 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
                 'width:100%;max-height:420px;overflow:auto;text-align:left;padding:12px;box-sizing:border-box;font-size:14px';
             const hint = document.createElement('p');
             hint.textContent =
-                '対象を選び、無料・有料と有料投稿の価格範囲を設定してください。初回登録以前の投稿は自動取得しません。';
+                '有料は支援中・支援予定のクリエイターだけオンにし、必要に応じて価格上限を設定してください。閲覧できない有料記事は保留し、約1日ごとに再確認します。初回登録以前の投稿は自動取得しません。';
             manager.append(hint);
-            const status = (stored[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoStatusKey] || {});
+            let status = (stored[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoStatusKey] || {});
             const statusLine = document.createElement('p');
-            const pendingCount = (stored[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoPendingKey] || []).length;
+            let pending = (stored[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoPendingKey] || []);
             const showStatus = (count) => {
-                statusLine.textContent = `登録: ${count}人 / 未処理: ${pendingCount}件 / 前回確認: ${status.lastCheckedAt ? new Date(status.lastCheckedAt).toLocaleString() : '未実施'}${status.lastError ? ` / エラー: ${status.lastError}` : ''}`;
+                const restrictedCount = pending.filter((item) => item.restricted).length;
+                statusLine.textContent = `登録: ${count}人 / 未処理: ${pending.length}件（閲覧制限で保留: ${restrictedCount}件） / 前回確認: ${status.lastCheckedAt ? new Date(status.lastCheckedAt).toLocaleString() : '未実施'}${status.lastError ? ` / エラー: ${status.lastError}` : ''}`;
             };
             showStatus(profiles.length);
             manager.append(statusLine);
+            const retryHint = document.createElement('p');
+            retryHint.textContent =
+                '再加入後は「保留記事を再確認」で待たずに再取得できます。再確認には保存済みの設定を使います。設定変更で対象外になった保留記事は、保存時に対象から外れます。';
+            manager.append(retryHint);
+            const retryUpdates = [];
+            let settingsDirty = false;
+            manager.addEventListener('input', () => {
+                settingsDirty = true;
+                retryUpdates.forEach((update) => update());
+            });
             const addCheckbox = (label, checked) => {
                 const input = document.createElement('input');
                 input.type = 'checkbox';
@@ -1606,7 +1631,7 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
                     return input;
                 };
                 const free = addCheck('無料', saved?.free ?? true);
-                const pay = addCheck('有料', saved?.pay ?? true);
+                const pay = addCheck('有料', saved?.pay ?? false);
                 const addAmount = (label, value) => {
                     const wrap = document.createElement('label');
                     wrap.textContent = `${label} `;
@@ -1623,6 +1648,46 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
                 };
                 const min = addAmount('下限', saved?.minFee ?? null);
                 const max = addAmount('上限', saved?.maxFee ?? null);
+                const retry = document.createElement('button');
+                retry.type = 'button';
+                let retrying = false;
+                const updateRetry = () => {
+                    const profile = profiles.find((item) => item.creatorId === creator.creatorId);
+                    const count = pending.filter((item) => item.creatorId === creator.creatorId &&
+                        item.restricted &&
+                        profile &&
+                        (0,_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.matchesAutoFee)(profile, item.fee)).length;
+                    retry.textContent = `保留記事を再確認（${count}件）`;
+                    retry.disabled = retrying || settingsDirty || count === 0;
+                    retry.title = settingsDirty
+                        ? '先に自動取得の設定を保存してください'
+                        : '';
+                };
+                retryUpdates.push(updateRetry);
+                updateRetry();
+                retry.addEventListener('click', () => {
+                    retrying = true;
+                    updateRetry();
+                    void chrome.runtime
+                        .sendMessage({
+                        msg: 'auto_retry_restricted',
+                        creatorId: creator.creatorId,
+                    })
+                        .then((response) => {
+                        if (typeof response?.count !== 'number') {
+                            throw new Error(response?.error || '再確認の受付を確認できませんでした');
+                        }
+                        window.alert(`${response.count}件を再確認の対象にしました。ほかの記事の処理中やEagleの起動待ちは順次処理します。`);
+                    })
+                        .catch((error) => {
+                        window.alert(`再確認できませんでした: ${error instanceof Error ? error.message : String(error)}`);
+                    })
+                        .finally(() => {
+                        retrying = false;
+                        updateRetry();
+                    });
+                });
+                row.append(document.createElement('br'), retry);
                 manager.append(row);
                 rows.push({
                     creatorId: creator.creatorId,
@@ -1665,11 +1730,28 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
                     });
                 }
                 save.disabled = true;
-                void chrome.storage.local
-                    .set({ [_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoProfilesKey]: next })
-                    .then(() => {
-                    profiles.splice(0, profiles.length, ...next);
-                    showStatus(next.length);
+                settingsDirty = true;
+                retryUpdates.forEach((update) => update());
+                const inputs = rows.flatMap((row) => [
+                    row.enabled,
+                    row.free,
+                    row.pay,
+                    row.min,
+                    row.max,
+                ]);
+                inputs.forEach((input) => {
+                    input.disabled = true;
+                });
+                void chrome.runtime
+                    .sendMessage({ msg: 'auto_save_profiles', profiles: next })
+                    .then((response) => {
+                    if (!Array.isArray(response?.profiles)) {
+                        throw new Error(response?.error || '設定の保存を確認できませんでした');
+                    }
+                    profiles.splice(0, profiles.length, ...response.profiles);
+                    settingsDirty = false;
+                    retryUpdates.forEach((update) => update());
+                    showStatus(profiles.length);
                     void chrome.runtime.sendMessage({ msg: 'auto_check_now' });
                     window.alert('自動取得の設定を保存しました');
                 })
@@ -1678,11 +1760,34 @@ class InitHomePage extends _InitPageBase__WEBPACK_IMPORTED_MODULE_3__.InitPageBa
                 })
                     .finally(() => {
                     save.disabled = false;
+                    inputs.forEach((input) => {
+                        input.disabled = false;
+                    });
                 });
             });
             manager.append(save);
-            if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type === currentPage)
+            if (_PageType__WEBPACK_IMPORTED_MODULE_7__.pageType.type === currentPage) {
+                this.clearAutoManagerListener();
+                this.autoManagerListener = (changes, area) => {
+                    if (area !== 'local')
+                        return;
+                    if (changes[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoPendingKey]) {
+                        pending = (changes[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoPendingKey].newValue ||
+                            []);
+                    }
+                    if (changes[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoStatusKey]) {
+                        status = changes[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoStatusKey].newValue || {};
+                    }
+                    if (changes[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoProfilesKey]) {
+                        profiles.splice(0, profiles.length, ...(changes[_auto_AutoTypes__WEBPACK_IMPORTED_MODULE_9__.autoProfilesKey].newValue ||
+                            []));
+                    }
+                    showStatus(profiles.length);
+                    retryUpdates.forEach((update) => update());
+                };
+                chrome.storage.onChanged.addListener(this.autoManagerListener);
                 slot.append(manager);
+            }
         }
         catch (error) {
             window.alert(`クリエイターを取得できませんでした: ${error instanceof Error ? error.message : String(error)}`);
@@ -5635,6 +5740,39 @@ class Download {
     // 下载文件
     async download(arg) {
         this.fileName = _FileName__WEBPACK_IMPORTED_MODULE_1__.fileName.getFileName(arg.data);
+        if (_setting_Settings__WEBPACK_IMPORTED_MODULE_8__.settings.saveToSpool) {
+            await _DownloadInterval__WEBPACK_IMPORTED_MODULE_7__.downloadInterval.wait();
+            this.setProgressBar(0, 0);
+            try {
+                const result = arg.data;
+                const generated = 'text' in result;
+                // A PNG attachment is still a file; keep the same identity as the proof intake.
+                const image = !generated && (result.index === 0 || new URL(result.url).pathname.includes('/images/post/'));
+                const fileId = generated ? `file:text-${result.ext}`
+                    : `${image ? 'image' : 'file'}:${result.index === 0 ? 'cover' : result.fileID}`;
+                const response = await chrome.runtime.sendMessage({
+                    msg: 'spool_save', id: arg.id, taskBatch: arg.taskBatch, originalURL: result.url,
+                    file: {
+                        postId: result.postId, fileId,
+                        fileName: generated ? `text.${result.ext}` : image ? `${result.postId}-${result.index === 0 ? 'cover' : result.fileID}.${result.ext}` : `${result.name}.${result.ext}`,
+                        expectedSize: result.size, url: generated ? await this.getEagleURL(result.url) : result.url,
+                        registration: {
+                            fileName: this.fileName,
+                            website: `https://www.fanbox.cc/@${encodeURIComponent(result.createID)}/posts/${encodeURIComponent(result.postId)}`,
+                            tags: result.tags ? result.tags.split(',').filter(Boolean) : [],
+                            ...(image ? { imageIndex: result.index } : {}),
+                        },
+                    },
+                });
+                if (!response?.receipt || response.error)
+                    throw new Error(response?.error || '保存確認が返りませんでした');
+                _Log__WEBPACK_IMPORTED_MODULE_5__.log.success(`ミニPCへ保存済み / Eagle${response.receipt.eagleState === 'done' ? '登録済み' : '登録待ち'}: ${this.fileName}`);
+            }
+            catch (error) {
+                this.eagleError(arg.data.url, arg.id, arg.taskBatch, error);
+            }
+            return;
+        }
         // 检查是否是重复文件
         const url = arg.data.url;
         if (this.arg.saveToEagle || !url.startsWith('blob')) {
@@ -5844,10 +5982,13 @@ class DownloadControl {
             if (!this.taskBatch) {
                 return;
             }
+            if (msg.data?.source === 'spool' && msg.data.taskBatch !== this.taskBatch)
+                return;
             if (msg.msg === 'eagle_error') {
                 const error = msg.err || 'unknown error';
-                _Log__WEBPACK_IMPORTED_MODULE_3__.log.error(`Eagle registration failed: ${error}`);
-                _MsgBox__WEBPACK_IMPORTED_MODULE_11__.msgBox.once('eagleError', `Eagle registration failed: ${_Tools__WEBPACK_IMPORTED_MODULE_1__.Tools.escapeHtml(error)}`, 'error');
+                const prefix = _setting_Settings__WEBPACK_IMPORTED_MODULE_8__.settings.saveToSpool ? 'ミニPCへの保存に失敗しました' : 'Eagle registration failed';
+                _Log__WEBPACK_IMPORTED_MODULE_3__.log.error(`${prefix}: ${error}`);
+                _MsgBox__WEBPACK_IMPORTED_MODULE_11__.msgBox.once('eagleError', `${prefix}: ${_Tools__WEBPACK_IMPORTED_MODULE_1__.Tools.escapeHtml(error)}`, 'error');
                 this.stopDownload();
                 return;
             }
@@ -5896,10 +6037,10 @@ class DownloadControl {
             }
         });
         window.addEventListener(_EVT__WEBPACK_IMPORTED_MODULE_0__.EVT.list.downloadComplete, () => {
-            const completeText = this.saveToEagle
+            const completeText = _setting_Settings__WEBPACK_IMPORTED_MODULE_8__.settings.saveToSpool ? 'ミニPCへの保存受付完了（Eagle登録は状態一覧で確認）' : this.saveToEagle
                 ? _Lang__WEBPACK_IMPORTED_MODULE_4__.lang.transl('_Eagle登録受付完了')
                 : _Lang__WEBPACK_IMPORTED_MODULE_4__.lang.transl('_下载完毕2');
-            const completeLog = this.saveToEagle
+            const completeLog = _setting_Settings__WEBPACK_IMPORTED_MODULE_8__.settings.saveToSpool ? 'ミニPCへの保存受付完了（Eagle登録は状態一覧で確認）' : this.saveToEagle
                 ? _Lang__WEBPACK_IMPORTED_MODULE_4__.lang.transl('_Eagle登録受付完了')
                 : _Lang__WEBPACK_IMPORTED_MODULE_4__.lang.transl('_下载完毕');
             this.setDownStateText(completeText, _Colors__WEBPACK_IMPORTED_MODULE_5__.Colors.textSuccess);
@@ -6200,7 +6341,7 @@ class DownloadControl {
                             textContent: result,
                         };
                         result.text = [
-                            await _CreateHtmlDocument__WEBPACK_IMPORTED_MODULE_17__.createHtmlDocument.create(result.htmlData, resultMeta, saveToEagle),
+                            await _CreateHtmlDocument__WEBPACK_IMPORTED_MODULE_17__.createHtmlDocument.create(result.htmlData, resultMeta, saveToEagle || _setting_Settings__WEBPACK_IMPORTED_MODULE_8__.settings.saveToSpool),
                         ];
                         result.ext = 'html';
                     }
@@ -6420,7 +6561,7 @@ class DownloadRecord {
             const successData = ev.detail.data;
             // 如果是 Blob URL 则不保存这个下载记录
             // 如果文件名异常，不保存这个下载记录，以便用户之后重新下载这个文件
-            if (successData.source !== 'eagle' &&
+            if (successData.source !== 'eagle' && successData.source !== 'spool' &&
                 !successData.url.startsWith('blob') &&
                 !successData.uuid) {
                 this.addRecord({
@@ -10462,6 +10603,7 @@ class Settings {
     }
     // 默认设置
     defaultSettings = {
+        saveToSpool: false,
         saveToEagle: false,
         image: true,
         music: true,
@@ -10732,6 +10874,198 @@ const self = new Settings();
 const settings = self.settings;
 const setSetting = self.setSetting.bind(self);
 
+
+
+/***/ },
+
+/***/ "./src/ts/spool/SpoolPanel.ts"
+/*!************************************!*\
+  !*** ./src/ts/spool/SpoolPanel.ts ***!
+  \************************************/
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+const parent = document.querySelector('#spoolProofStatus')?.closest('details')?.parentElement;
+if (parent) {
+    const panel = document.createElement('details');
+    panel.className = 'option';
+    const title = document.createElement('summary');
+    title.textContent = 'ミニPCへの設定反映・保存／Eagle登録状況';
+    const apply = document.createElement('button');
+    apply.type = 'button';
+    apply.textContent = 'ミニPCへ反映';
+    const refresh = document.createElement('button');
+    refresh.type = 'button';
+    refresh.textContent = '状態を確認';
+    const output = document.createElement('div');
+    output.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto';
+    output.setAttribute('aria-live', 'polite');
+    const request = async (msg, values = {}) => {
+        const response = await chrome.runtime.sendMessage({ msg, ...values });
+        if (response?.error || !response?.result)
+            throw new Error(response?.error || 'ミニPCから応答がありません');
+        return response.result;
+    };
+    apply.addEventListener('click', async () => {
+        apply.disabled = true;
+        try {
+            await request('spool_apply');
+            output.textContent = '設定を補助サービスへ保存し、読み戻しを確認しました。専用ブラウザの反映状況は「状態を確認」で確認できます。';
+        }
+        catch (error) {
+            output.textContent = error instanceof Error ? error.message : '反映に失敗しました';
+        }
+        finally {
+            apply.disabled = false;
+        }
+    });
+    refresh.addEventListener('click', async () => {
+        refresh.disabled = true;
+        try {
+            const status = await request('spool_status');
+            output.replaceChildren();
+            output.append(`新規取得: ${status.acquisitionPaused ? '容量不足で停止中' : '受付可能'} / 空き ${(status.freeBytes / 1024 ** 3).toFixed(1)} GiB\n`);
+            output.append(`設定: ${status.configurationRevision && status.configurationRevision === status.appliedRevision ? '専用ブラウザへ反映済み' : '専用ブラウザの反映待ち'}\n`);
+            output.append(`Eagle登録済み: ${status.counts.done || 0} / 確認待ち: ${status.counts.held || 0}\n最近の受付（最大200件）\n`);
+            const labels = { pending: '登録待ち', retry: '接続待ち', submitting: '送信意図を保存済み', checking: '登録を照合中', held: '確認待ち', done: '登録済み', not_submitted: '登録対象外' };
+            for (const item of status.items) {
+                const row = document.createElement('p');
+                row.textContent = `${item.fileName}\n${item.saveState === 'saved' ? 'ミニPCへ保存済み' : '転送未完了'} / Eagle${labels[item.eagleState] || item.eagleState}${item.reason ? ` (${item.reason})` : ''}`;
+                if (item.eagleState === 'held') {
+                    const resend = document.createElement('button');
+                    resend.type = 'button';
+                    resend.textContent = '未登録を確認して再送';
+                    resend.addEventListener('click', async () => {
+                        if (!window.confirm('Eagleの登録先・元投稿URL・画像を確認し、このファイルが登録されていないことを確認しましたか？ 成否不明のまま再送すると重複する可能性があります。'))
+                            return;
+                        resend.disabled = true;
+                        try {
+                            await request('spool_resubmit', { receiptId: item.receiptId, confirmNotRegistered: true });
+                            row.append('\n再送を受け付けました。状態を更新してください。');
+                        }
+                        catch (error) {
+                            row.append(`\n${error instanceof Error ? error.message : '再送に失敗しました'}`);
+                            resend.disabled = false;
+                        }
+                    });
+                    row.append(resend);
+                }
+                output.append(row);
+            }
+        }
+        catch (error) {
+            output.textContent = error instanceof Error ? error.message : '状態を取得できませんでした';
+        }
+        finally {
+            refresh.disabled = false;
+        }
+    });
+    panel.append(title, apply, refresh, output);
+    parent.prepend(panel);
+}
+
+
+
+/***/ },
+
+/***/ "./src/ts/spool/SpoolProof.ts"
+/*!************************************!*\
+  !*** ./src/ts/spool/SpoolProof.ts ***!
+  \************************************/
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony import */ var _SpoolPanel__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! ./SpoolPanel */ "./src/ts/spool/SpoolPanel.ts");
+/* harmony import */ var _API__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! ../API */ "./src/ts/API.ts");
+
+
+const list = document.querySelector('#spoolProofList');
+const save = document.querySelector('#spoolProofSave');
+const select = document.querySelector('#spoolProofFile');
+const status = document.querySelector('#spoolProofStatus');
+let files = [];
+let listedPost = '';
+document.querySelector('#spoolProofOptions').addEventListener('click', () => {
+    void chrome.runtime.sendMessage({ msg: 'spool_proof_options' });
+});
+list.addEventListener('click', async () => {
+    list.disabled = true;
+    save.disabled = true;
+    select.replaceChildren();
+    files = [];
+    try {
+        const postId = /\/posts\/(\d+)(?:\/|$)/.exec(location.pathname)?.[1];
+        if (!postId)
+            throw new Error('取得する投稿のページで操作してください');
+        const data = await _API__WEBPACK_IMPORTED_MODULE_1__.API.getPost(postId);
+        // Keep the same response compatibility as InitPostPage.
+        const post = data?.body?.post || data?.body;
+        if (!post || post.id !== postId || !post.body)
+            throw new Error('投稿本文を取得できません。ログインと閲覧権限を確認してください');
+        const addImage = (image) => {
+            files.push({ postId, fileId: `image:${image.id}`, fileName: `${postId}-${image.id}.${image.extension}`,
+                expectedSize: null, url: image.originalUrl });
+        };
+        const addFile = (file) => {
+            files.push({ postId, fileId: `file:${file.id}`, fileName: `${file.name}.${file.extension}`,
+                expectedSize: file.size, url: file.url });
+        };
+        if (post.type === 'image' && post.body)
+            post.body.images.forEach(addImage);
+        if (post.type === 'file' && post.body)
+            post.body.files.forEach(addFile);
+        if (post.type === 'article' && post.body) {
+            Object.values(post.body.imageMap).forEach(addImage);
+            Object.values(post.body.fileMap).forEach(addFile);
+        }
+        files = files.filter((file) => file.expectedSize === null || file.expectedSize <= 64 * 1024 * 1024);
+        if (!files.length)
+            throw new Error('実証対象の添付画像・ファイルがありません（上限64 MiB）');
+        for (const [index, file] of files.entries()) {
+            const option = document.createElement('option');
+            option.value = String(index);
+            option.textContent = file.fileName;
+            select.append(option);
+        }
+        listedPost = postId;
+        status.textContent = '1件選んで保存してください。Eagle登録と既存の取得履歴の更新は行いません。';
+        save.disabled = false;
+    }
+    catch (error) {
+        status.textContent = error instanceof Error ? error.message : '投稿の添付ファイルを取得できませんでした';
+    }
+    finally {
+        list.disabled = false;
+    }
+});
+save.addEventListener('click', async () => {
+    save.disabled = true;
+    list.disabled = true;
+    try {
+        if (/\/posts\/(\d+)(?:\/|$)/.exec(location.pathname)?.[1] !== listedPost) {
+            throw new Error('投稿が変わりました。添付ファイルを読み直してください');
+        }
+        const file = files[Number(select.value)];
+        if (!file)
+            throw new Error('ファイルを選択してください');
+        status.textContent = '認証付きで取得・保存しています…';
+        const response = await chrome.runtime.sendMessage({ msg: 'spool_proof_save', file });
+        if (response?.error)
+            throw new Error(response.error);
+        const receipt = response?.receipt;
+        if (!receipt || receipt.state !== 'saved' || receipt.eagleState !== 'not_submitted') {
+            throw new Error('保存確認を受信できませんでした。同じファイルで再確認できます');
+        }
+        status.textContent = `ミニPCへ保存済み / Eagle未登録\n${receipt.fileName}\n${receipt.size} bytes\nSHA-256: ${receipt.sha256}\n受付ID: ${receipt.receiptId}`;
+    }
+    catch (error) {
+        status.textContent = error instanceof Error ? error.message : '保存確認ができませんでした。同じファイルで再確認できます';
+    }
+    finally {
+        save.disabled = false;
+        list.disabled = false;
+    }
+});
 
 
 /***/ },
@@ -11350,7 +11684,7 @@ class Utils {
   \******************************/
 (module) {
 
-module.exports = "<form class=\"settingForm\">\n  <p class=\"option\" data-no=\"62\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_保存先\"></span>\n\n    <input\n      type=\"checkbox\"\n      name=\"saveToEagle\"\n      id=\"saveToEagle\"\n      class=\"need_beautify checkbox_common\"\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label for=\"saveToEagle\" data-xztext=\"_Eagleに登録\"></label>\n  </p>\n\n  <p class=\"option\" data-no=\"2\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_文件类型\"></span>\n\n    <input\n      type=\"checkbox\"\n      name=\"image\"\n      id=\"fileType1\"\n      class=\"need_beautify checkbox_common\"\n      checked\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label\n      for=\"fileType1\"\n      class=\"has_tip\"\n      data-tip=\"__fileType.image__\"\n      data-xztext=\"_图片\"\n    ></label>\n\n    <input\n      type=\"checkbox\"\n      name=\"music\"\n      id=\"fileType2\"\n      class=\"need_beautify checkbox_common\"\n      checked\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label\n      for=\"fileType2\"\n      class=\"has_tip\"\n      data-tip=\"__fileType.music__\"\n      data-xztext=\"_音乐\"\n    ></label>\n\n    <input\n      type=\"checkbox\"\n      name=\"video\"\n      id=\"fileType3\"\n      class=\"need_beautify checkbox_common\"\n      checked\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label\n      for=\"fileType3\"\n      class=\"has_tip\"\n      data-tip=\"__fileType.video__\"\n      data-xztext=\"_视频\"\n    ></label>\n\n    <input\n      type=\"checkbox\"\n      name=\"compressed\"\n      id=\"fileType4\"\n      class=\"need_beautify checkbox_common\"\n      checked\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label\n      for=\"fileType4\"\n      class=\"has_tip\"\n      data-tip=\"__fileType.compressed__\"\n      data-xztext=\"_压缩文件\"\n    ></label>\n\n    <input\n      type=\"checkbox\"\n      name=\"ps\"\n      id=\"fileType5\"\n      class=\"need_beautify checkbox_common\"\n      checked\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label\n      for=\"fileType5\"\n      class=\"has_tip\"\n      data-tip=\"__fileType.ps__\"\n      data-xztext=\"_PS文件\"\n    ></label>\n\n    <input\n      type=\"checkbox\"\n      name=\"other\"\n      id=\"fileType6\"\n      class=\"need_beautify checkbox_common\"\n      checked\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label\n      for=\"fileType6\"\n      class=\"has_tip\"\n      data-tip=\"__fileType.other__\"\n      data-xztext=\"_其他\"\n    ></label>\n  </p>\n\n  <p class=\"option\" data-no=\"21\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_费用类型\"></span>\n\n    <input\n      type=\"checkbox\"\n      name=\"free\"\n      id=\"postType1\"\n      class=\"need_beautify checkbox_common\"\n      checked\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label for=\"postType1\" data-xztext=\"_免费投稿\"></label>\n\n    <input\n      type=\"checkbox\"\n      name=\"pay\"\n      id=\"postType2\"\n      class=\"need_beautify checkbox_common\"\n      checked\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label for=\"postType2\" data-xztext=\"_付费投稿\"></label>\n  </p>\n\n  <p class=\"option\" data-no=\"9\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_价格范围\"></span>\n    <input\n      type=\"checkbox\"\n      name=\"feeSwitch\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n    <span class=\"subOptionWrap\" data-show=\"feeSwitch\">\n      <input\n        type=\"radio\"\n        name=\"feeRange\"\n        id=\"feeRange0\"\n        class=\"need_beautify radio\"\n        value=\"<=\"\n        checked\n      />\n      <span class=\"beautify_radio\" tabindex=\"0\"></span>\n      <label for=\"feeRange0\">&lt;=</label>\n\n      <input\n        type=\"radio\"\n        name=\"feeRange\"\n        id=\"feeRange2\"\n        class=\"need_beautify radio\"\n        value=\"=\"\n      />\n      <span class=\"beautify_radio\" tabindex=\"0\"></span>\n      <label for=\"feeRange2\">=</label>\n\n      <input\n        type=\"radio\"\n        name=\"feeRange\"\n        id=\"feeRange1\"\n        class=\"need_beautify radio\"\n        value=\">=\"\n        checked\n      />\n      <span class=\"beautify_radio\" tabindex=\"0\"></span>\n      <label for=\"feeRange1\">&gt;=</label>\n\n      <input type=\"text\" name=\"fee\" class=\"setinput_style1 blue\" value=\"500\" />\n      ¥\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"7\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_设置id范围提示\">\n      <span data-xztext=\"_id范围\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"idRangeSwitch\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n    <span class=\"subOptionWrap\" data-show=\"idRangeSwitch\">\n      <input\n        type=\"radio\"\n        name=\"idRange\"\n        id=\"idRange2\"\n        class=\"need_beautify radio\"\n        value=\"<\"\n        checked\n      />\n      <span class=\"beautify_radio\"></span>\n      <label for=\"idRange2\" data-xztext=\"_小于\"></label>\n      <input\n        type=\"radio\"\n        name=\"idRange\"\n        id=\"idRange1\"\n        class=\"need_beautify radio\"\n        value=\">\"\n      />\n      <span class=\"beautify_radio\"></span>\n      <label for=\"idRange1\" data-xztext=\"_大于\"></label>\n      <input\n        type=\"text\"\n        name=\"idRangeInput\"\n        class=\"setinput_style1 w100 blue\"\n        value=\"0\"\n      />\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"10\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_设置投稿时间提示\">\n      <span data-xztext=\"_投稿时间\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n\n    <input\n      type=\"checkbox\"\n      name=\"postDate\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n    <span class=\"subOptionWrap\" data-show=\"postDate\">\n      <input\n        type=\"datetime-local\"\n        name=\"postDateStart\"\n        placeholder=\"yyyy-MM-dd HH:mm\"\n        class=\"setinput_style1 postDate blue\"\n        value=\"\"\n      />\n      &nbsp;-&nbsp;\n      <input\n        type=\"datetime-local\"\n        name=\"postDateEnd\"\n        placeholder=\"yyyy-MM-dd HH:mm\"\n        class=\"setinput_style1 postDate blue\"\n        value=\"\"\n      />\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"59\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_图片尺寸的提示\">\n      <span data-xztext=\"_图片尺寸\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n\n    <input\n      type=\"radio\"\n      name=\"imageSize\"\n      id=\"imageSize1\"\n      class=\"need_beautify radio\"\n      value=\"original\"\n      checked\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"imageSize1\" data-xztext=\"_原图\"></label>\n    <input\n      type=\"radio\"\n      name=\"imageSize\"\n      id=\"imageSize2\"\n      class=\"need_beautify radio\"\n      value=\"thumbnail\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"imageSize2\" data-xztext=\"_缩略图\"></label>\n    <label for=\"imageSize2\" class=\"gray1\">(1200px)</label>\n  </p>\n\n  <p class=\"option\" data-no=\"22\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_保存投稿中的封面图片\"></span>\n    <input\n      type=\"checkbox\"\n      name=\"savePostCover\"\n      class=\"need_beautify checkbox_switch\"\n      checked\n    />\n    <span class=\"beautify_switch\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"20\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_保存投稿中的文字\"></span>\n    <input\n      type=\"checkbox\"\n      name=\"saveText\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n    <span class=\"subOptionWrap\" data-show=\"saveText\">\n      <span class=\"mr4\" data-xztext=\"_格式\"></span>\n      <input\n        type=\"radio\"\n        name=\"textFormat\"\n        id=\"textFormat1\"\n        class=\"need_beautify radio\"\n        value=\"txt\"\n        checked\n      />\n      <span class=\"beautify_radio\" tabindex=\"0\"></span>\n      <label for=\"textFormat1\">TXT</label>\n      <input\n        type=\"radio\"\n        name=\"textFormat\"\n        id=\"textFormat2\"\n        class=\"need_beautify radio\"\n        value=\"html\"\n      />\n      <span class=\"beautify_radio\" tabindex=\"0\"></span>\n      <label for=\"textFormat2\" data-xztext=\"_HTML\"></label>\n      <button\n        type=\"button\"\n        class=\"gray textButton showMsgBtn\"\n        data-title=\"_保存投稿中的文字\"\n        data-msg=\"_保存投稿中的文字的说明\"\n        data-xztext=\"_帮助\"\n      ></button>\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"19\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_保存投稿中的外部链接\"></span>\n    <input\n      type=\"checkbox\"\n      name=\"saveLink\"\n      class=\"need_beautify checkbox_switch\"\n      checked\n    />\n    <span class=\"beautify_switch\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"61\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_保存投稿中的评论\"></span>\n    <input\n      type=\"checkbox\"\n      name=\"saveComment\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"23\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_多条文字用逗号分割\">\n      <span data-xztext=\"_投稿标题必须含有文字\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"titleMustTextSwitch\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n    <span class=\"subOptionWrap\" data-show=\"titleMustTextSwitch\">\n      <input\n        type=\"text\"\n        name=\"titleMustText\"\n        class=\"setinput_style1 blue fileNameRule\"\n        value=\"\"\n        placeholder=\"text1,text2,text3\"\n      />\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"24\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_多条文字用逗号分割\">\n      <span data-xztext=\"_投稿标题不能含有文字\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"titleCannotTextSwitch\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n    <span class=\"subOptionWrap\" data-show=\"titleCannotTextSwitch\">\n      <input\n        type=\"text\"\n        name=\"titleCannotText\"\n        class=\"setinput_style1 blue fileNameRule\"\n        value=\"\"\n        placeholder=\"text1,text2,text3\"\n      />\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"54\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_文件指的是附件\">\n      <span data-xztext=\"_文件名中必须含有文字\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"fileNameIncludeSwitch\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n    <span class=\"subOptionWrap\" data-show=\"fileNameIncludeSwitch\">\n      <span data-xztext=\"_任一\"></span>\n      <input\n        type=\"text\"\n        name=\"fileNameInclude\"\n        class=\"setinput_style1 blue fileNameRule\"\n        value=\"\"\n        placeholder=\"text1,text2,text3\"\n      />\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"55\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_文件指的是附件\">\n      <span data-xztext=\"_文件名中不能含有文字\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"fileNameExcludeSwitch\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n    <span class=\"subOptionWrap\" data-show=\"fileNameExcludeSwitch\">\n      <span data-xztext=\"_任一\"></span>\n      <input\n        type=\"text\"\n        name=\"fileNameExclude\"\n        class=\"setinput_style1 blue fileNameRule\"\n        value=\"\"\n        placeholder=\"text1,text2,text3\"\n      />\n    </span>\n  </p>\n\n  <slot data-name=\"crawlBtns\" class=\"centerWrap_btns crawlBtns\"></slot>\n  <slot data-name=\"downloadArea\"></slot>\n  <slot data-name=\"progressBar\"></slot>\n\n  <p class=\"option\" data-no=\"13\">\n    <span class=\"settingNameStyle1\">\n      <span data-xztext=\"_图片的命名规则\"></span>\n    </span>\n    <input\n      type=\"text\"\n      name=\"userSetName\"\n      class=\"setinput_style1 blue fileNameRule\"\n      value=\"__defaultNameRule__\"\n    />\n    &nbsp;\n    <select name=\"fileNameSelect\" class=\"beautify_scrollbar\">\n      <option value=\"default\">…</option>\n      <option value=\"{user}\">{user}</option>\n      <option value=\"{creator_id}\">{creator_id}</option>\n      <option value=\"{user_id}\">{user_id}</option>\n      <option value=\"{title}\">{title}</option>\n      <option value=\"{post_id}\">{post_id}</option>\n      <option value=\"{date}\">{date}</option>\n      <option value=\"{task_date}\">{task_date}</option>\n      <option value=\"{index}\">{index}</option>\n      <option value=\"{name}\">{name}</option>\n      <option value=\"{ext}\">{ext}</option>\n      <option value=\"{fee}\">{fee}</option>\n      <option value=\"{tags}\">{tags}</option>\n    </select>\n    &nbsp;\n    <slot data-name=\"saveNamingRule\"></slot>\n    <button\n      class=\"showFileNameTip textButton\"\n      type=\"button\"\n      data-xztext=\"_提示\"\n    ></button>\n  </p>\n  <p class=\"tip tipWithBtn\" id=\"tipCreateFolder\">\n    <span class=\"left\">\n      <span data-xztext=\"_设置文件夹名的提示\"></span>\n      <strong>__defaultNameRule__</strong>\n    </span>\n    <span class=\"right\">\n      <button\n        type=\"button\"\n        class=\"textButton gray1\"\n        id=\"tipCreateFolderBtn\"\n        data-xztext=\"_我知道了\"\n      ></button>\n    </span>\n  </p>\n  <p class=\"fileNameTip tip\">\n    <span data-xztext=\"_设置文件夹名的提示\"></span>\n    <strong>__defaultNameRule__</strong>\n    <br />\n    <span data-xztext=\"_命名标记提醒\"></span>\n    <br />\n    <span class=\"blue\">{user}</span>\n    <span data-xztext=\"_命名标记user\"></span>\n    <br />\n    <span class=\"blue\">{user_id}</span>\n    <span data-xztext=\"_命名标记uid\"></span>\n    <br />\n    <span class=\"blue\">{creator_id}</span>\n    <span data-xztext=\"_命名标记creator_id\"></span>\n    <br />\n    <span class=\"blue\">{title}</span>\n    <span data-xztext=\"_命名标记title\"></span>\n    <br />\n    <span class=\"blue\">{post_id}</span>\n    <span data-xztext=\"_命名标记postid\"></span>\n    <br />\n    <span class=\"blue\">{date}</span>\n    <span data-xztext=\"_命名标记date\"></span>\n    <br />\n    <span class=\"blue\">{task_date}</span>\n    <span data-xztext=\"_命名标记taskDate\"></span>\n    <br />\n    <span class=\"blue\">{index}</span>\n    <span data-xztext=\"_命名标记index\"></span>\n    <br />\n    <span class=\"blue\">{name}</span>\n    <span data-xztext=\"_命名标记name\"></span>\n    <br />\n    <span class=\"blue\">{ext}</span>\n    <span data-xztext=\"_命名标记ext\"></span>\n    <br />\n    <span class=\"blue\">{fee}</span>\n    <span data-xztext=\"_命名标记fee\"></span>\n    <br />\n    <span class=\"blue\">{tags}</span>\n    <span data-xztext=\"_命名标记tags\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"33\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_非图片的命名规则\"></span>\n    <input\n      type=\"text\"\n      name=\"nameruleForNonImages\"\n      class=\"setinput_style1 blue nameruleForNonImages\"\n      style=\"width: 300px\"\n      value=\"{user}/{date}-{title}/{name}\"\n    />\n  </p>\n\n  <p class=\"option\" data-no=\"31\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_日期格式\"></span>\n    <input\n      type=\"text\"\n      name=\"dateFormat\"\n      class=\"setinput_style1 blue\"\n      style=\"width: 250px\"\n      value=\"YYYY-MM-DD\"\n    />\n    <button\n      type=\"button\"\n      class=\"gray1 textButton showDateTip\"\n      data-xztext=\"_提示\"\n    ></button>\n  </p>\n  <p class=\"dateFormatTip tip\" style=\"display: none\">\n    <span data-xztext=\"_日期格式提示\"></span>\n    <br />\n    <span class=\"blue\">YYYY</span> <span>2021</span>\n    <br />\n    <span class=\"blue\">YY</span> <span>21</span>\n    <br />\n    <span class=\"blue\">MM</span> <span>04</span>\n    <br />\n    <span class=\"blue\">MMM</span> <span>Apr</span>\n    <br />\n    <span class=\"blue\">MMMM</span> <span>April</span>\n    <br />\n    <span class=\"blue\">DD</span> <span>30</span>\n    <br />\n    <span class=\"blue\">hh</span> <span>06</span>\n    <br />\n    <span class=\"blue\">mm</span> <span>40</span>\n    <br />\n    <span class=\"blue\">ss</span> <span>08</span>\n    <br />\n  </p>\n\n  <p class=\"option\" data-no=\"46\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_在序号前面填充0的说明\">\n      <span data-xztext=\"_在序号前面填充0\"></span>\n      <span class=\"gray1\"> ? </span></span\n    >\n    <input\n      type=\"checkbox\"\n      name=\"zeroPadding\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\" tabindex=\"0\"></span>\n    <span class=\"subOptionWrap\" data-show=\"zeroPadding\">\n      <span data-xztext=\"_序号总长度\"></span>\n      <input\n        type=\"text\"\n        name=\"zeroPaddingLength\"\n        class=\"setinput_style1 blue\"\n        value=\"3\"\n        style=\"width: 30px; min-width: 30px\"\n      />\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"17\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_自动下载的提示\">\n      <span data-xztext=\"_自动开始下载\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"autoStartDownload\"\n      id=\"setQuietDownload\"\n      class=\"need_beautify checkbox_switch\"\n      checked\n    />\n    <span class=\"beautify_switch\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"16\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_线程数字\">\n      <span data-xztext=\"_下载线程\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"text\"\n      name=\"downloadThread\"\n      class=\"has_tip setinput_style1 blue\"\n      data-xztip=\"_线程数字\"\n      value=\"3\"\n    />\n  </p>\n\n  <p class=\"option\" data-no=\"52\">\n    <span\n      class=\"has_tip settingNameStyle1\"\n      data-xztip=\"_下载完成后显示通知的说明\"\n    >\n      <span data-xztext=\"_下载完成后显示通知\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"showNotificationAfterDownloadComplete\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\" tabindex=\"0\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"57\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_抓取间隔的说明\">\n      <span data-xztext=\"_抓取间隔\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n\n    <span data-xztext=\"_间隔时间\"></span>\n    <input\n      type=\"text\"\n      name=\"crawlInterval\"\n      class=\"setinput_style1 blue\"\n      value=\"1\"\n    />\n    <span data-xztext=\"_秒\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"56\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_下载间隔的说明\">\n      <span data-xztext=\"_下载间隔\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n\n    <span data-xztext=\"_间隔时间\"></span>\n    <input\n      type=\"text\"\n      name=\"downloadInterval\"\n      class=\"setinput_style1 blue\"\n      value=\"1\"\n    />\n    <span data-xztext=\"_秒\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"58\">\n    <span\n      class=\"has_tip settingNameStyle1\"\n      data-xztip=\"_每天下载的文件大小限制的说明\"\n    >\n      <span data-xztext=\"_每天下载的文件大小限制\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"totalDownloadLimitSwitch\"\n      class=\"need_beautify checkbox_switch\"\n      checked\n    />\n    <span class=\"beautify_switch\" tabindex=\"0\"></span>\n\n    <span class=\"subOptionWrap\" data-show=\"totalDownloadLimitSwitch\">\n      <input\n        type=\"text\"\n        name=\"totalDownloadLimit\"\n        class=\"setinput_style1 blue\"\n        value=\"10\"\n      />\n      <span>GiB</span>\n    </span>\n    <button\n      class=\"textButton gray1\"\n      type=\"button\"\n      id=\"totalDownloadHistory\"\n      data-xztext=\"_查看历史数据\"\n    ></button>\n  </p>\n\n  <p class=\"option\" data-no=\"28\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_不下载重复文件的提示\">\n      <span data-xztext=\"_不下载重复文件\"></span>\n      <span class=\"gray1\"> ? </span></span\n    >\n    <input\n      type=\"checkbox\"\n      name=\"deduplication\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\" tabindex=\"0\"></span>\n    <span class=\"subOptionWrap\" data-show=\"deduplication\">\n      <button\n        class=\"textButton gray1\"\n        type=\"button\"\n        id=\"exportDownloadRecord\"\n        data-xztext=\"_导出\"\n      ></button>\n      <button\n        class=\"textButton gray1\"\n        type=\"button\"\n        id=\"importDownloadRecord\"\n        data-xztext=\"_导入\"\n      ></button>\n      <button\n        class=\"textButton gray1\"\n        type=\"button\"\n        id=\"clearDownloadRecord\"\n        data-xztext=\"_清除\"\n      ></button>\n    </span>\n    <button\n      class=\"textButton gray1\"\n      type=\"button\"\n      id=\"deduplicationHelp\"\n      data-xztext=\"_提示\"\n    ></button>\n  </p>\n\n  <p class=\"option\" data-no=\"18\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_统一网址格式的说明\">\n      <span data-xztext=\"_统一网址格式\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"unifiedURL\"\n      class=\"need_beautify checkbox_switch\"\n      checked\n    />\n    <span class=\"beautify_switch\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"53\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_高亮显示关键字\"></span>\n    <input\n      type=\"checkbox\"\n      name=\"boldKeywords\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\" tabindex=\"0\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"41\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_背景图片\"> </span>\n    <input\n      type=\"checkbox\"\n      name=\"bgDisplay\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\" tabindex=\"0\"></span>\n\n    <span class=\"subOptionWrap\" data-show=\"bgDisplay\">\n      <button\n        class=\"textButton gray1\"\n        type=\"button\"\n        id=\"selectBG\"\n        data-xztext=\"_选择文件\"\n      ></button>\n      <button\n        class=\"textButton gray1\"\n        type=\"button\"\n        id=\"clearBG\"\n        data-xztext=\"_清除\"\n      ></button>\n\n      &nbsp;\n      <span data-xztext=\"_对齐方式\"></span>&nbsp;\n      <input\n        type=\"radio\"\n        name=\"bgPositionY\"\n        id=\"bgPosition1\"\n        class=\"need_beautify radio\"\n        value=\"center\"\n        checked\n      />\n      <span class=\"beautify_radio\" tabindex=\"0\"></span>\n      <label for=\"bgPosition1\" data-xztext=\"_居中\"></label>\n      <input\n        type=\"radio\"\n        name=\"bgPositionY\"\n        id=\"bgPosition2\"\n        class=\"need_beautify radio\"\n        value=\"top\"\n      />\n      <span class=\"beautify_radio\" tabindex=\"0\"></span>\n      <label for=\"bgPosition2\" data-xztext=\"_顶部\"></label>\n      <span data-xztext=\"_不透明度\"></span>&nbsp;\n      <input name=\"bgOpacity\" type=\"range\" />\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"60\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_颜色主题\"></span>\n    <input\n      type=\"radio\"\n      name=\"theme\"\n      id=\"theme1\"\n      class=\"need_beautify radio\"\n      value=\"auto\"\n      checked\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"theme1\" data-xztext=\"_自动检测\"></label>\n    <input\n      type=\"radio\"\n      name=\"theme\"\n      id=\"theme2\"\n      class=\"need_beautify radio\"\n      value=\"white\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"theme2\">White</label>\n    <input\n      type=\"radio\"\n      name=\"theme\"\n      id=\"theme3\"\n      class=\"need_beautify radio\"\n      value=\"dark\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"theme3\">Dark</label>\n  </p>\n\n  <p class=\"option\" data-no=\"32\">\n    <span class=\"settingNameStyle1\"><span class=\"key\">Language</span></span>\n    <input\n      type=\"radio\"\n      name=\"userSetLang\"\n      id=\"userSetLang1\"\n      class=\"need_beautify radio\"\n      value=\"auto\"\n      checked\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"userSetLang1\" data-xztext=\"_自动检测\"></label>\n    <input\n      type=\"radio\"\n      name=\"userSetLang\"\n      id=\"userSetLang2\"\n      class=\"need_beautify radio\"\n      value=\"zh-cn\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"userSetLang2\">简体中文</label>\n    <input\n      type=\"radio\"\n      name=\"userSetLang\"\n      id=\"userSetLang3\"\n      class=\"need_beautify radio\"\n      value=\"zh-tw\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"userSetLang3\">繁體中文</label>\n    <input\n      type=\"radio\"\n      name=\"userSetLang\"\n      id=\"userSetLang4\"\n      class=\"need_beautify radio\"\n      value=\"ja\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"userSetLang4\">日本語</label>\n    <input\n      type=\"radio\"\n      name=\"userSetLang\"\n      id=\"userSetLang5\"\n      class=\"need_beautify radio\"\n      value=\"en\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"userSetLang5\">English</label>\n    <input\n      type=\"radio\"\n      name=\"userSetLang\"\n      id=\"userSetLang6\"\n      class=\"need_beautify radio\"\n      value=\"ko\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"userSetLang6\">한국어</label>\n    <input\n      type=\"radio\"\n      name=\"userSetLang\"\n      id=\"userSetLang7\"\n      class=\"need_beautify radio\"\n      value=\"ru\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"userSetLang7\">Русский</label>\n  </p>\n\n  <p class=\"option\" data-no=\"37\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_管理设置\"></span>\n    <button\n      class=\"textButton gray1\"\n      type=\"button\"\n      id=\"exportSettings\"\n      data-xztext=\"_导出设置\"\n    ></button>\n    <button\n      class=\"textButton gray1\"\n      type=\"button\"\n      id=\"importSettings\"\n      data-xztext=\"_导入设置\"\n    ></button>\n    <button\n      class=\"textButton gray1\"\n      type=\"button\"\n      id=\"resetSettings\"\n      data-xztext=\"_重置设置\"\n    ></button>\n  </p>\n\n  <p class=\"option\" data-no=\"51\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_显示高级设置说明\">\n      <span data-xztext=\"_显示高级设置\"></span>\n      <span class=\"gray1\"> ? </span></span\n    >\n    <input\n      type=\"checkbox\"\n      name=\"showAdvancedSettings\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\" tabindex=\"0\"></span>\n  </p>\n</form>\n";
+module.exports = "<form class=\"settingForm\">\n  <details class=\"option\">\n    <summary>ミニPCへ1件保存（実証）</summary>\n    <p>投稿の添付ファイル1件を保存します。Eagle登録・自動取得の切り替えは行いません。</p>\n    <button type=\"button\" id=\"spoolProofOptions\">接続設定</button>\n    <button type=\"button\" id=\"spoolProofList\">この投稿の添付ファイルを読む</button>\n    <select id=\"spoolProofFile\" aria-label=\"保存実証する添付ファイル\"></select>\n    <button type=\"button\" id=\"spoolProofSave\" disabled>選択した1件を保存</button>\n    <output id=\"spoolProofStatus\" aria-live=\"polite\" style=\"display:block;white-space:pre-wrap;overflow-wrap:anywhere\"></output>\n  </details>\n  <p class=\"option\" data-no=\"62\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_保存先\"></span>\n\n    <input\n      type=\"checkbox\"\n      name=\"saveToEagle\"\n      id=\"saveToEagle\"\n      class=\"need_beautify checkbox_common\"\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label for=\"saveToEagle\" data-xztext=\"_Eagleに登録\"></label>\n  </p>\n\n  <p class=\"option\" data-no=\"2\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_文件类型\"></span>\n\n    <input\n      type=\"checkbox\"\n      name=\"image\"\n      id=\"fileType1\"\n      class=\"need_beautify checkbox_common\"\n      checked\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label\n      for=\"fileType1\"\n      class=\"has_tip\"\n      data-tip=\"__fileType.image__\"\n      data-xztext=\"_图片\"\n    ></label>\n\n    <input\n      type=\"checkbox\"\n      name=\"music\"\n      id=\"fileType2\"\n      class=\"need_beautify checkbox_common\"\n      checked\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label\n      for=\"fileType2\"\n      class=\"has_tip\"\n      data-tip=\"__fileType.music__\"\n      data-xztext=\"_音乐\"\n    ></label>\n\n    <input\n      type=\"checkbox\"\n      name=\"video\"\n      id=\"fileType3\"\n      class=\"need_beautify checkbox_common\"\n      checked\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label\n      for=\"fileType3\"\n      class=\"has_tip\"\n      data-tip=\"__fileType.video__\"\n      data-xztext=\"_视频\"\n    ></label>\n\n    <input\n      type=\"checkbox\"\n      name=\"compressed\"\n      id=\"fileType4\"\n      class=\"need_beautify checkbox_common\"\n      checked\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label\n      for=\"fileType4\"\n      class=\"has_tip\"\n      data-tip=\"__fileType.compressed__\"\n      data-xztext=\"_压缩文件\"\n    ></label>\n\n    <input\n      type=\"checkbox\"\n      name=\"ps\"\n      id=\"fileType5\"\n      class=\"need_beautify checkbox_common\"\n      checked\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label\n      for=\"fileType5\"\n      class=\"has_tip\"\n      data-tip=\"__fileType.ps__\"\n      data-xztext=\"_PS文件\"\n    ></label>\n\n    <input\n      type=\"checkbox\"\n      name=\"other\"\n      id=\"fileType6\"\n      class=\"need_beautify checkbox_common\"\n      checked\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label\n      for=\"fileType6\"\n      class=\"has_tip\"\n      data-tip=\"__fileType.other__\"\n      data-xztext=\"_其他\"\n    ></label>\n  </p>\n\n  <p class=\"option\" data-no=\"21\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_费用类型\"></span>\n\n    <input\n      type=\"checkbox\"\n      name=\"free\"\n      id=\"postType1\"\n      class=\"need_beautify checkbox_common\"\n      checked\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label for=\"postType1\" data-xztext=\"_免费投稿\"></label>\n\n    <input\n      type=\"checkbox\"\n      name=\"pay\"\n      id=\"postType2\"\n      class=\"need_beautify checkbox_common\"\n      checked\n    />\n    <span class=\"beautify_checkbox\"></span>\n    <label for=\"postType2\" data-xztext=\"_付费投稿\"></label>\n  </p>\n\n  <p class=\"option\" data-no=\"9\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_价格范围\"></span>\n    <input\n      type=\"checkbox\"\n      name=\"feeSwitch\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n    <span class=\"subOptionWrap\" data-show=\"feeSwitch\">\n      <input\n        type=\"radio\"\n        name=\"feeRange\"\n        id=\"feeRange0\"\n        class=\"need_beautify radio\"\n        value=\"<=\"\n        checked\n      />\n      <span class=\"beautify_radio\" tabindex=\"0\"></span>\n      <label for=\"feeRange0\">&lt;=</label>\n\n      <input\n        type=\"radio\"\n        name=\"feeRange\"\n        id=\"feeRange2\"\n        class=\"need_beautify radio\"\n        value=\"=\"\n      />\n      <span class=\"beautify_radio\" tabindex=\"0\"></span>\n      <label for=\"feeRange2\">=</label>\n\n      <input\n        type=\"radio\"\n        name=\"feeRange\"\n        id=\"feeRange1\"\n        class=\"need_beautify radio\"\n        value=\">=\"\n        checked\n      />\n      <span class=\"beautify_radio\" tabindex=\"0\"></span>\n      <label for=\"feeRange1\">&gt;=</label>\n\n      <input type=\"text\" name=\"fee\" class=\"setinput_style1 blue\" value=\"500\" />\n      ¥\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"7\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_设置id范围提示\">\n      <span data-xztext=\"_id范围\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"idRangeSwitch\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n    <span class=\"subOptionWrap\" data-show=\"idRangeSwitch\">\n      <input\n        type=\"radio\"\n        name=\"idRange\"\n        id=\"idRange2\"\n        class=\"need_beautify radio\"\n        value=\"<\"\n        checked\n      />\n      <span class=\"beautify_radio\"></span>\n      <label for=\"idRange2\" data-xztext=\"_小于\"></label>\n      <input\n        type=\"radio\"\n        name=\"idRange\"\n        id=\"idRange1\"\n        class=\"need_beautify radio\"\n        value=\">\"\n      />\n      <span class=\"beautify_radio\"></span>\n      <label for=\"idRange1\" data-xztext=\"_大于\"></label>\n      <input\n        type=\"text\"\n        name=\"idRangeInput\"\n        class=\"setinput_style1 w100 blue\"\n        value=\"0\"\n      />\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"10\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_设置投稿时间提示\">\n      <span data-xztext=\"_投稿时间\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n\n    <input\n      type=\"checkbox\"\n      name=\"postDate\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n    <span class=\"subOptionWrap\" data-show=\"postDate\">\n      <input\n        type=\"datetime-local\"\n        name=\"postDateStart\"\n        placeholder=\"yyyy-MM-dd HH:mm\"\n        class=\"setinput_style1 postDate blue\"\n        value=\"\"\n      />\n      &nbsp;-&nbsp;\n      <input\n        type=\"datetime-local\"\n        name=\"postDateEnd\"\n        placeholder=\"yyyy-MM-dd HH:mm\"\n        class=\"setinput_style1 postDate blue\"\n        value=\"\"\n      />\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"59\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_图片尺寸的提示\">\n      <span data-xztext=\"_图片尺寸\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n\n    <input\n      type=\"radio\"\n      name=\"imageSize\"\n      id=\"imageSize1\"\n      class=\"need_beautify radio\"\n      value=\"original\"\n      checked\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"imageSize1\" data-xztext=\"_原图\"></label>\n    <input\n      type=\"radio\"\n      name=\"imageSize\"\n      id=\"imageSize2\"\n      class=\"need_beautify radio\"\n      value=\"thumbnail\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"imageSize2\" data-xztext=\"_缩略图\"></label>\n    <label for=\"imageSize2\" class=\"gray1\">(1200px)</label>\n  </p>\n\n  <p class=\"option\" data-no=\"22\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_保存投稿中的封面图片\"></span>\n    <input\n      type=\"checkbox\"\n      name=\"savePostCover\"\n      class=\"need_beautify checkbox_switch\"\n      checked\n    />\n    <span class=\"beautify_switch\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"20\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_保存投稿中的文字\"></span>\n    <input\n      type=\"checkbox\"\n      name=\"saveText\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n    <span class=\"subOptionWrap\" data-show=\"saveText\">\n      <span class=\"mr4\" data-xztext=\"_格式\"></span>\n      <input\n        type=\"radio\"\n        name=\"textFormat\"\n        id=\"textFormat1\"\n        class=\"need_beautify radio\"\n        value=\"txt\"\n        checked\n      />\n      <span class=\"beautify_radio\" tabindex=\"0\"></span>\n      <label for=\"textFormat1\">TXT</label>\n      <input\n        type=\"radio\"\n        name=\"textFormat\"\n        id=\"textFormat2\"\n        class=\"need_beautify radio\"\n        value=\"html\"\n      />\n      <span class=\"beautify_radio\" tabindex=\"0\"></span>\n      <label for=\"textFormat2\" data-xztext=\"_HTML\"></label>\n      <button\n        type=\"button\"\n        class=\"gray textButton showMsgBtn\"\n        data-title=\"_保存投稿中的文字\"\n        data-msg=\"_保存投稿中的文字的说明\"\n        data-xztext=\"_帮助\"\n      ></button>\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"19\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_保存投稿中的外部链接\"></span>\n    <input\n      type=\"checkbox\"\n      name=\"saveLink\"\n      class=\"need_beautify checkbox_switch\"\n      checked\n    />\n    <span class=\"beautify_switch\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"61\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_保存投稿中的评论\"></span>\n    <input\n      type=\"checkbox\"\n      name=\"saveComment\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"23\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_多条文字用逗号分割\">\n      <span data-xztext=\"_投稿标题必须含有文字\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"titleMustTextSwitch\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n    <span class=\"subOptionWrap\" data-show=\"titleMustTextSwitch\">\n      <input\n        type=\"text\"\n        name=\"titleMustText\"\n        class=\"setinput_style1 blue fileNameRule\"\n        value=\"\"\n        placeholder=\"text1,text2,text3\"\n      />\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"24\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_多条文字用逗号分割\">\n      <span data-xztext=\"_投稿标题不能含有文字\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"titleCannotTextSwitch\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n    <span class=\"subOptionWrap\" data-show=\"titleCannotTextSwitch\">\n      <input\n        type=\"text\"\n        name=\"titleCannotText\"\n        class=\"setinput_style1 blue fileNameRule\"\n        value=\"\"\n        placeholder=\"text1,text2,text3\"\n      />\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"54\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_文件指的是附件\">\n      <span data-xztext=\"_文件名中必须含有文字\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"fileNameIncludeSwitch\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n    <span class=\"subOptionWrap\" data-show=\"fileNameIncludeSwitch\">\n      <span data-xztext=\"_任一\"></span>\n      <input\n        type=\"text\"\n        name=\"fileNameInclude\"\n        class=\"setinput_style1 blue fileNameRule\"\n        value=\"\"\n        placeholder=\"text1,text2,text3\"\n      />\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"55\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_文件指的是附件\">\n      <span data-xztext=\"_文件名中不能含有文字\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"fileNameExcludeSwitch\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\"></span>\n    <span class=\"subOptionWrap\" data-show=\"fileNameExcludeSwitch\">\n      <span data-xztext=\"_任一\"></span>\n      <input\n        type=\"text\"\n        name=\"fileNameExclude\"\n        class=\"setinput_style1 blue fileNameRule\"\n        value=\"\"\n        placeholder=\"text1,text2,text3\"\n      />\n    </span>\n  </p>\n\n  <slot data-name=\"crawlBtns\" class=\"centerWrap_btns crawlBtns\"></slot>\n  <slot data-name=\"downloadArea\"></slot>\n  <slot data-name=\"progressBar\"></slot>\n\n  <p class=\"option\" data-no=\"13\">\n    <span class=\"settingNameStyle1\">\n      <span data-xztext=\"_图片的命名规则\"></span>\n    </span>\n    <input\n      type=\"text\"\n      name=\"userSetName\"\n      class=\"setinput_style1 blue fileNameRule\"\n      value=\"__defaultNameRule__\"\n    />\n    &nbsp;\n    <select name=\"fileNameSelect\" class=\"beautify_scrollbar\">\n      <option value=\"default\">…</option>\n      <option value=\"{user}\">{user}</option>\n      <option value=\"{creator_id}\">{creator_id}</option>\n      <option value=\"{user_id}\">{user_id}</option>\n      <option value=\"{title}\">{title}</option>\n      <option value=\"{post_id}\">{post_id}</option>\n      <option value=\"{date}\">{date}</option>\n      <option value=\"{task_date}\">{task_date}</option>\n      <option value=\"{index}\">{index}</option>\n      <option value=\"{name}\">{name}</option>\n      <option value=\"{ext}\">{ext}</option>\n      <option value=\"{fee}\">{fee}</option>\n      <option value=\"{tags}\">{tags}</option>\n    </select>\n    &nbsp;\n    <slot data-name=\"saveNamingRule\"></slot>\n    <button\n      class=\"showFileNameTip textButton\"\n      type=\"button\"\n      data-xztext=\"_提示\"\n    ></button>\n  </p>\n  <p class=\"tip tipWithBtn\" id=\"tipCreateFolder\">\n    <span class=\"left\">\n      <span data-xztext=\"_设置文件夹名的提示\"></span>\n      <strong>__defaultNameRule__</strong>\n    </span>\n    <span class=\"right\">\n      <button\n        type=\"button\"\n        class=\"textButton gray1\"\n        id=\"tipCreateFolderBtn\"\n        data-xztext=\"_我知道了\"\n      ></button>\n    </span>\n  </p>\n  <p class=\"fileNameTip tip\">\n    <span data-xztext=\"_设置文件夹名的提示\"></span>\n    <strong>__defaultNameRule__</strong>\n    <br />\n    <span data-xztext=\"_命名标记提醒\"></span>\n    <br />\n    <span class=\"blue\">{user}</span>\n    <span data-xztext=\"_命名标记user\"></span>\n    <br />\n    <span class=\"blue\">{user_id}</span>\n    <span data-xztext=\"_命名标记uid\"></span>\n    <br />\n    <span class=\"blue\">{creator_id}</span>\n    <span data-xztext=\"_命名标记creator_id\"></span>\n    <br />\n    <span class=\"blue\">{title}</span>\n    <span data-xztext=\"_命名标记title\"></span>\n    <br />\n    <span class=\"blue\">{post_id}</span>\n    <span data-xztext=\"_命名标记postid\"></span>\n    <br />\n    <span class=\"blue\">{date}</span>\n    <span data-xztext=\"_命名标记date\"></span>\n    <br />\n    <span class=\"blue\">{task_date}</span>\n    <span data-xztext=\"_命名标记taskDate\"></span>\n    <br />\n    <span class=\"blue\">{index}</span>\n    <span data-xztext=\"_命名标记index\"></span>\n    <br />\n    <span class=\"blue\">{name}</span>\n    <span data-xztext=\"_命名标记name\"></span>\n    <br />\n    <span class=\"blue\">{ext}</span>\n    <span data-xztext=\"_命名标记ext\"></span>\n    <br />\n    <span class=\"blue\">{fee}</span>\n    <span data-xztext=\"_命名标记fee\"></span>\n    <br />\n    <span class=\"blue\">{tags}</span>\n    <span data-xztext=\"_命名标记tags\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"33\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_非图片的命名规则\"></span>\n    <input\n      type=\"text\"\n      name=\"nameruleForNonImages\"\n      class=\"setinput_style1 blue nameruleForNonImages\"\n      style=\"width: 300px\"\n      value=\"{user}/{date}-{title}/{name}\"\n    />\n  </p>\n\n  <p class=\"option\" data-no=\"31\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_日期格式\"></span>\n    <input\n      type=\"text\"\n      name=\"dateFormat\"\n      class=\"setinput_style1 blue\"\n      style=\"width: 250px\"\n      value=\"YYYY-MM-DD\"\n    />\n    <button\n      type=\"button\"\n      class=\"gray1 textButton showDateTip\"\n      data-xztext=\"_提示\"\n    ></button>\n  </p>\n  <p class=\"dateFormatTip tip\" style=\"display: none\">\n    <span data-xztext=\"_日期格式提示\"></span>\n    <br />\n    <span class=\"blue\">YYYY</span> <span>2021</span>\n    <br />\n    <span class=\"blue\">YY</span> <span>21</span>\n    <br />\n    <span class=\"blue\">MM</span> <span>04</span>\n    <br />\n    <span class=\"blue\">MMM</span> <span>Apr</span>\n    <br />\n    <span class=\"blue\">MMMM</span> <span>April</span>\n    <br />\n    <span class=\"blue\">DD</span> <span>30</span>\n    <br />\n    <span class=\"blue\">hh</span> <span>06</span>\n    <br />\n    <span class=\"blue\">mm</span> <span>40</span>\n    <br />\n    <span class=\"blue\">ss</span> <span>08</span>\n    <br />\n  </p>\n\n  <p class=\"option\" data-no=\"46\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_在序号前面填充0的说明\">\n      <span data-xztext=\"_在序号前面填充0\"></span>\n      <span class=\"gray1\"> ? </span></span\n    >\n    <input\n      type=\"checkbox\"\n      name=\"zeroPadding\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\" tabindex=\"0\"></span>\n    <span class=\"subOptionWrap\" data-show=\"zeroPadding\">\n      <span data-xztext=\"_序号总长度\"></span>\n      <input\n        type=\"text\"\n        name=\"zeroPaddingLength\"\n        class=\"setinput_style1 blue\"\n        value=\"3\"\n        style=\"width: 30px; min-width: 30px\"\n      />\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"17\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_自动下载的提示\">\n      <span data-xztext=\"_自动开始下载\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"autoStartDownload\"\n      id=\"setQuietDownload\"\n      class=\"need_beautify checkbox_switch\"\n      checked\n    />\n    <span class=\"beautify_switch\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"16\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_线程数字\">\n      <span data-xztext=\"_下载线程\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"text\"\n      name=\"downloadThread\"\n      class=\"has_tip setinput_style1 blue\"\n      data-xztip=\"_线程数字\"\n      value=\"3\"\n    />\n  </p>\n\n  <p class=\"option\" data-no=\"52\">\n    <span\n      class=\"has_tip settingNameStyle1\"\n      data-xztip=\"_下载完成后显示通知的说明\"\n    >\n      <span data-xztext=\"_下载完成后显示通知\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"showNotificationAfterDownloadComplete\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\" tabindex=\"0\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"57\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_抓取间隔的说明\">\n      <span data-xztext=\"_抓取间隔\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n\n    <span data-xztext=\"_间隔时间\"></span>\n    <input\n      type=\"text\"\n      name=\"crawlInterval\"\n      class=\"setinput_style1 blue\"\n      value=\"1\"\n    />\n    <span data-xztext=\"_秒\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"56\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_下载间隔的说明\">\n      <span data-xztext=\"_下载间隔\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n\n    <span data-xztext=\"_间隔时间\"></span>\n    <input\n      type=\"text\"\n      name=\"downloadInterval\"\n      class=\"setinput_style1 blue\"\n      value=\"1\"\n    />\n    <span data-xztext=\"_秒\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"58\">\n    <span\n      class=\"has_tip settingNameStyle1\"\n      data-xztip=\"_每天下载的文件大小限制的说明\"\n    >\n      <span data-xztext=\"_每天下载的文件大小限制\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"totalDownloadLimitSwitch\"\n      class=\"need_beautify checkbox_switch\"\n      checked\n    />\n    <span class=\"beautify_switch\" tabindex=\"0\"></span>\n\n    <span class=\"subOptionWrap\" data-show=\"totalDownloadLimitSwitch\">\n      <input\n        type=\"text\"\n        name=\"totalDownloadLimit\"\n        class=\"setinput_style1 blue\"\n        value=\"10\"\n      />\n      <span>GiB</span>\n    </span>\n    <button\n      class=\"textButton gray1\"\n      type=\"button\"\n      id=\"totalDownloadHistory\"\n      data-xztext=\"_查看历史数据\"\n    ></button>\n  </p>\n\n  <p class=\"option\" data-no=\"28\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_不下载重复文件的提示\">\n      <span data-xztext=\"_不下载重复文件\"></span>\n      <span class=\"gray1\"> ? </span></span\n    >\n    <input\n      type=\"checkbox\"\n      name=\"deduplication\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\" tabindex=\"0\"></span>\n    <span class=\"subOptionWrap\" data-show=\"deduplication\">\n      <button\n        class=\"textButton gray1\"\n        type=\"button\"\n        id=\"exportDownloadRecord\"\n        data-xztext=\"_导出\"\n      ></button>\n      <button\n        class=\"textButton gray1\"\n        type=\"button\"\n        id=\"importDownloadRecord\"\n        data-xztext=\"_导入\"\n      ></button>\n      <button\n        class=\"textButton gray1\"\n        type=\"button\"\n        id=\"clearDownloadRecord\"\n        data-xztext=\"_清除\"\n      ></button>\n    </span>\n    <button\n      class=\"textButton gray1\"\n      type=\"button\"\n      id=\"deduplicationHelp\"\n      data-xztext=\"_提示\"\n    ></button>\n  </p>\n\n  <p class=\"option\" data-no=\"18\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_统一网址格式的说明\">\n      <span data-xztext=\"_统一网址格式\"></span>\n      <span class=\"gray1\"> ? </span>\n    </span>\n    <input\n      type=\"checkbox\"\n      name=\"unifiedURL\"\n      class=\"need_beautify checkbox_switch\"\n      checked\n    />\n    <span class=\"beautify_switch\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"53\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_高亮显示关键字\"></span>\n    <input\n      type=\"checkbox\"\n      name=\"boldKeywords\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\" tabindex=\"0\"></span>\n  </p>\n\n  <p class=\"option\" data-no=\"41\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_背景图片\"> </span>\n    <input\n      type=\"checkbox\"\n      name=\"bgDisplay\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\" tabindex=\"0\"></span>\n\n    <span class=\"subOptionWrap\" data-show=\"bgDisplay\">\n      <button\n        class=\"textButton gray1\"\n        type=\"button\"\n        id=\"selectBG\"\n        data-xztext=\"_选择文件\"\n      ></button>\n      <button\n        class=\"textButton gray1\"\n        type=\"button\"\n        id=\"clearBG\"\n        data-xztext=\"_清除\"\n      ></button>\n\n      &nbsp;\n      <span data-xztext=\"_对齐方式\"></span>&nbsp;\n      <input\n        type=\"radio\"\n        name=\"bgPositionY\"\n        id=\"bgPosition1\"\n        class=\"need_beautify radio\"\n        value=\"center\"\n        checked\n      />\n      <span class=\"beautify_radio\" tabindex=\"0\"></span>\n      <label for=\"bgPosition1\" data-xztext=\"_居中\"></label>\n      <input\n        type=\"radio\"\n        name=\"bgPositionY\"\n        id=\"bgPosition2\"\n        class=\"need_beautify radio\"\n        value=\"top\"\n      />\n      <span class=\"beautify_radio\" tabindex=\"0\"></span>\n      <label for=\"bgPosition2\" data-xztext=\"_顶部\"></label>\n      <span data-xztext=\"_不透明度\"></span>&nbsp;\n      <input name=\"bgOpacity\" type=\"range\" />\n    </span>\n  </p>\n\n  <p class=\"option\" data-no=\"60\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_颜色主题\"></span>\n    <input\n      type=\"radio\"\n      name=\"theme\"\n      id=\"theme1\"\n      class=\"need_beautify radio\"\n      value=\"auto\"\n      checked\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"theme1\" data-xztext=\"_自动检测\"></label>\n    <input\n      type=\"radio\"\n      name=\"theme\"\n      id=\"theme2\"\n      class=\"need_beautify radio\"\n      value=\"white\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"theme2\">White</label>\n    <input\n      type=\"radio\"\n      name=\"theme\"\n      id=\"theme3\"\n      class=\"need_beautify radio\"\n      value=\"dark\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"theme3\">Dark</label>\n  </p>\n\n  <p class=\"option\" data-no=\"32\">\n    <span class=\"settingNameStyle1\"><span class=\"key\">Language</span></span>\n    <input\n      type=\"radio\"\n      name=\"userSetLang\"\n      id=\"userSetLang1\"\n      class=\"need_beautify radio\"\n      value=\"auto\"\n      checked\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"userSetLang1\" data-xztext=\"_自动检测\"></label>\n    <input\n      type=\"radio\"\n      name=\"userSetLang\"\n      id=\"userSetLang2\"\n      class=\"need_beautify radio\"\n      value=\"zh-cn\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"userSetLang2\">简体中文</label>\n    <input\n      type=\"radio\"\n      name=\"userSetLang\"\n      id=\"userSetLang3\"\n      class=\"need_beautify radio\"\n      value=\"zh-tw\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"userSetLang3\">繁體中文</label>\n    <input\n      type=\"radio\"\n      name=\"userSetLang\"\n      id=\"userSetLang4\"\n      class=\"need_beautify radio\"\n      value=\"ja\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"userSetLang4\">日本語</label>\n    <input\n      type=\"radio\"\n      name=\"userSetLang\"\n      id=\"userSetLang5\"\n      class=\"need_beautify radio\"\n      value=\"en\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"userSetLang5\">English</label>\n    <input\n      type=\"radio\"\n      name=\"userSetLang\"\n      id=\"userSetLang6\"\n      class=\"need_beautify radio\"\n      value=\"ko\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"userSetLang6\">한국어</label>\n    <input\n      type=\"radio\"\n      name=\"userSetLang\"\n      id=\"userSetLang7\"\n      class=\"need_beautify radio\"\n      value=\"ru\"\n    />\n    <span class=\"beautify_radio\" tabindex=\"0\"></span>\n    <label for=\"userSetLang7\">Русский</label>\n  </p>\n\n  <p class=\"option\" data-no=\"37\">\n    <span class=\"settingNameStyle1\" data-xztext=\"_管理设置\"></span>\n    <button\n      class=\"textButton gray1\"\n      type=\"button\"\n      id=\"exportSettings\"\n      data-xztext=\"_导出设置\"\n    ></button>\n    <button\n      class=\"textButton gray1\"\n      type=\"button\"\n      id=\"importSettings\"\n      data-xztext=\"_导入设置\"\n    ></button>\n    <button\n      class=\"textButton gray1\"\n      type=\"button\"\n      id=\"resetSettings\"\n      data-xztext=\"_重置设置\"\n    ></button>\n  </p>\n\n  <p class=\"option\" data-no=\"51\">\n    <span class=\"has_tip settingNameStyle1\" data-xztip=\"_显示高级设置说明\">\n      <span data-xztext=\"_显示高级设置\"></span>\n      <span class=\"gray1\"> ? </span></span\n    >\n    <input\n      type=\"checkbox\"\n      name=\"showAdvancedSettings\"\n      class=\"need_beautify checkbox_switch\"\n    />\n    <span class=\"beautify_switch\" tabindex=\"0\"></span>\n  </p>\n</form>\n";
 
 /***/ }
 
@@ -11431,18 +11765,19 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var _PageType__WEBPACK_IMPORTED_MODULE_3__ = __webpack_require__(/*! ./PageType */ "./src/ts/PageType.ts");
 /* harmony import */ var _CenterPanel__WEBPACK_IMPORTED_MODULE_4__ = __webpack_require__(/*! ./CenterPanel */ "./src/ts/CenterPanel.ts");
 /* harmony import */ var _setting_Form__WEBPACK_IMPORTED_MODULE_5__ = __webpack_require__(/*! ./setting/Form */ "./src/ts/setting/Form.ts");
-/* harmony import */ var _InitPage__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(/*! ./InitPage */ "./src/ts/InitPage.ts");
-/* harmony import */ var _QuickCrawl__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(/*! ./QuickCrawl */ "./src/ts/QuickCrawl.ts");
-/* harmony import */ var _Tip__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(/*! ./Tip */ "./src/ts/Tip.ts");
-/* harmony import */ var _Tip__WEBPACK_IMPORTED_MODULE_8___default = /*#__PURE__*/__webpack_require__.n(_Tip__WEBPACK_IMPORTED_MODULE_8__);
-/* harmony import */ var _OutputPanel__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(/*! ./OutputPanel */ "./src/ts/OutputPanel.ts");
-/* harmony import */ var _download_DownloadControl__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(/*! ./download/DownloadControl */ "./src/ts/download/DownloadControl.ts");
-/* harmony import */ var _download_ShowStatusOnTitle__WEBPACK_IMPORTED_MODULE_11__ = __webpack_require__(/*! ./download/ShowStatusOnTitle */ "./src/ts/download/ShowStatusOnTitle.ts");
-/* harmony import */ var _download_Resume__WEBPACK_IMPORTED_MODULE_12__ = __webpack_require__(/*! ./download/Resume */ "./src/ts/download/Resume.ts");
-/* harmony import */ var _ShowNotification__WEBPACK_IMPORTED_MODULE_13__ = __webpack_require__(/*! ./ShowNotification */ "./src/ts/ShowNotification.ts");
-/* harmony import */ var _ShowHowToUse__WEBPACK_IMPORTED_MODULE_14__ = __webpack_require__(/*! ./ShowHowToUse */ "./src/ts/ShowHowToUse.ts");
-/* harmony import */ var _ShowWhatIsNew__WEBPACK_IMPORTED_MODULE_15__ = __webpack_require__(/*! ./ShowWhatIsNew */ "./src/ts/ShowWhatIsNew.ts");
-/* harmony import */ var _CheckUnsupportBrowser__WEBPACK_IMPORTED_MODULE_16__ = __webpack_require__(/*! ./CheckUnsupportBrowser */ "./src/ts/CheckUnsupportBrowser.ts");
+/* harmony import */ var _spool_SpoolProof__WEBPACK_IMPORTED_MODULE_6__ = __webpack_require__(/*! ./spool/SpoolProof */ "./src/ts/spool/SpoolProof.ts");
+/* harmony import */ var _InitPage__WEBPACK_IMPORTED_MODULE_7__ = __webpack_require__(/*! ./InitPage */ "./src/ts/InitPage.ts");
+/* harmony import */ var _QuickCrawl__WEBPACK_IMPORTED_MODULE_8__ = __webpack_require__(/*! ./QuickCrawl */ "./src/ts/QuickCrawl.ts");
+/* harmony import */ var _Tip__WEBPACK_IMPORTED_MODULE_9__ = __webpack_require__(/*! ./Tip */ "./src/ts/Tip.ts");
+/* harmony import */ var _Tip__WEBPACK_IMPORTED_MODULE_9___default = /*#__PURE__*/__webpack_require__.n(_Tip__WEBPACK_IMPORTED_MODULE_9__);
+/* harmony import */ var _OutputPanel__WEBPACK_IMPORTED_MODULE_10__ = __webpack_require__(/*! ./OutputPanel */ "./src/ts/OutputPanel.ts");
+/* harmony import */ var _download_DownloadControl__WEBPACK_IMPORTED_MODULE_11__ = __webpack_require__(/*! ./download/DownloadControl */ "./src/ts/download/DownloadControl.ts");
+/* harmony import */ var _download_ShowStatusOnTitle__WEBPACK_IMPORTED_MODULE_12__ = __webpack_require__(/*! ./download/ShowStatusOnTitle */ "./src/ts/download/ShowStatusOnTitle.ts");
+/* harmony import */ var _download_Resume__WEBPACK_IMPORTED_MODULE_13__ = __webpack_require__(/*! ./download/Resume */ "./src/ts/download/Resume.ts");
+/* harmony import */ var _ShowNotification__WEBPACK_IMPORTED_MODULE_14__ = __webpack_require__(/*! ./ShowNotification */ "./src/ts/ShowNotification.ts");
+/* harmony import */ var _ShowHowToUse__WEBPACK_IMPORTED_MODULE_15__ = __webpack_require__(/*! ./ShowHowToUse */ "./src/ts/ShowHowToUse.ts");
+/* harmony import */ var _ShowWhatIsNew__WEBPACK_IMPORTED_MODULE_16__ = __webpack_require__(/*! ./ShowWhatIsNew */ "./src/ts/ShowWhatIsNew.ts");
+/* harmony import */ var _CheckUnsupportBrowser__WEBPACK_IMPORTED_MODULE_17__ = __webpack_require__(/*! ./CheckUnsupportBrowser */ "./src/ts/CheckUnsupportBrowser.ts");
 /*
  * project: Pixiv Fanbox Downloader
  * author:  xuejianxianzun; 雪见仙尊
@@ -11453,6 +11788,7 @@ __webpack_require__.r(__webpack_exports__);
  * E-mail:  xuejianxianzun@gmail.com
  * QQ group:  853021998
  */
+
 
 
 

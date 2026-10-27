@@ -14,7 +14,7 @@ git fetch origin
 git branch -vv
 ```
 
-remoteに認証情報が含まれる場合は表示せず、ホストとリポジトリだけ確認する。`origin`は`riyonasan/PixivFanboxDownloader`、`upstream`は本家。既定ブランチは`master`。現在の継続作業はHANDOFFのブランチを使う。既存の未コミット変更を削除・stash・別作業へ取り込まない。
+remoteに認証情報が含まれる場合は表示せず、ホストとリポジトリだけ確認する。`origin`は`riyonasan/PixivFanboxDownloader`、`upstream`は本家。既定・本番ブランチは`master`。開発変更は隔離した作業ツリーで検証し、本人承認の統合後にmaster上で再検証してから、そのコミットを配備する。既存の未コミット変更を削除・stash・別作業へ取り込まない。
 
 別PCへ移る場合は、未完了の作業を作業ブランチでローカルコミットし、共通AGENTS.mdのGit push方針に従ってpushする。共通方針または別途承認に従ったpush後は両PCのコミット一致を確認する。未pushの間は元PCで継続する。`pull --ff-only`やブランチ切替は、作業ツリーと対象ブランチが安全な場合にだけ行う。
 
@@ -23,11 +23,11 @@ remoteに認証情報が含まれる場合は表示せず、ホストとリポ�
 TypeScript、webpack、Node.jsを利用する。新cloneでは`npm install`で依存を導入する。lockfileは現行運用でGit除外されており、有効なローカル`package-lock.json`がある環境では`npm ci`も使える。テンプレート導入だけを理由に追跡方針は変えない。実証サービスはPython 3.11以上の標準ライブラリのみで動く。既存`.env.example`は通知用`NTFY_URL`の例であり、新しい環境変数は追加しない。
 
 ```text
-node --test tests/spool-proof.cjs tests/spool-runtime.cjs
+node --test tests/auto-scheduler.cjs tests/spool-proof.cjs tests/spool-runtime.cjs
 python -B -m unittest discover -s services/spool_proof -p "test_*.py" -v
 ```
 
-`tests/auto-scheduler.cjs`は別作業の未追跡ファイルで、cloneしただけで利用可能とは扱わない。既存13件は新しいSpoolRuntime依存だけを通常動作用のstubに置き換えた外部fixtureで検証した。元ファイルは保護しており、直接実行するにはその依存fixtureの追加が必要。新しい追跡対象のテストは上記コマンドだけで動く。Linuxを補助サービスの実行対象とし、HTTPを含むPython試験もLinuxで確認する。
+保留記事の自動取得テストも追跡済みで、上記コマンドだけで実行できる。スケジューラー試験の収集可否はstubとし、実際のcollector・managerの制御はspool-runtime.cjsで検証する。Linuxを補助サービスの実行対象とし、HTTPを含むPython試験も本番DBから隔離したLinuxの一時領域で確認する。
 
 既存の`dist/js`を保護するビルド例（PowerShell）:
 
