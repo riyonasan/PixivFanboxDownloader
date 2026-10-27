@@ -17,8 +17,20 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def same_name(actual, expected):
     if actual == expected:
         return True
-    left, right = re.fullmatch(r'(.*-)(\d+)', actual), re.fullmatch(r'(.*-)(\d+)', expected)
-    return bool(left and right and left[1] == right[1] and int(left[2]) == int(right[2]))
+    # Eagle drops pictographs but can retain variation selectors and joiners.
+    without_emoji = re.sub(r'[\U0001F000-\U0001FAFF\u2600-\u27BF]', '', expected)
+    for candidate in (expected, without_emoji):
+        if candidate and actual == candidate:
+            return True
+        left, right = re.fullmatch(r'(.*-)(\d+)', actual), re.fullmatch(r'(.*-)(\d+)', candidate)
+        if left and right and left[1] == right[1] and int(left[2]) == int(right[2]):
+            return True
+    return False
+
+
+def canonical_ext(value):
+    value = value.lower()
+    return 'jpg' if value == 'jpeg' else value
 
 
 def folder_path(name):
@@ -109,7 +121,7 @@ class EagleClient:
 
     def find(self, payload, marker=None):
         items, offset = [], 0
-        ext = payload['path'].rsplit('.',1)[-1].lower()
+        ext = canonical_ext(payload['path'].rsplit('.',1)[-1])
         while True:
             page = self.request('item/list?'+urllib.parse.urlencode({'folders':payload['folderId'],'limit':1000,'offset':offset}))
             if not isinstance(page, list):
@@ -122,7 +134,7 @@ class EagleClient:
                 if marker is not None:
                     matches = item.get('annotation') == marker
                 else:
-                    matches = same_name(item.get('name',''),payload['name']) and item.get('ext','').lower() == ext
+                    matches = same_name(item.get('name',''),payload['name']) and canonical_ext(item.get('ext','')) == ext
                 if matches:
                     items.append(item)
             if len(page) < 1000:
@@ -135,7 +147,7 @@ class EagleClient:
         if (not isinstance(item.get('id'), str) or not re.fullmatch(r'[A-Za-z0-9_-]+',item['id'])
                 or not same_name(item.get('name',''),payload['name'])
                 or re.search(r'[\\/\x00-\x1f]',item['name'])
-                or item.get('ext','').lower() != payload['path'].rsplit('.',1)[-1].lower()
+                or canonical_ext(item.get('ext','')) != canonical_ext(payload['path'].rsplit('.',1)[-1])
                 or item.get('size') != job['size'] or item.get('url') != payload['website']
                 or payload['folderId'] not in item.get('folders', [])):
             raise Held('eagle_metadata_mismatch')

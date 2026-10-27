@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 from fifo import Held, Unavailable, Queue
 from runtime import SpoolStorage, SpoolHandler, GIB, validate_config, notification_step
-from eagle_client import EagleClient, same_name, folder_path
+from eagle_client import EagleClient, same_name, folder_path, canonical_ext
 from service import Rejected
 
 
@@ -258,6 +258,23 @@ class FifoTests(unittest.TestCase):
         self.queue.step()
         self.assertEqual(self.state(key),'done')
         self.assertEqual(len(self.eagle.posts),0)
+
+    def test_held_registered_item_rechecks_without_repost_and_can_cleanup(self):
+        key=self.save()['receiptId']
+        self.queue.step()
+        self.eagle.items[0]['mismatch']=True
+        self.queue.step()
+        self.assertEqual(self.state(key),'held')
+        intent=self.queue.job(key)['intent']
+        self.eagle.items[0].pop('mismatch')
+        self.queue.check(self.queue.job(key))
+        self.assertEqual(self.state(key),'done')
+        self.assertEqual(self.queue.job(key)['intent'],intent)
+        self.assertEqual(len(self.eagle.posts),1)
+        self.assertEqual(self.storage.db.execute('SELECT count(*) FROM eagle_attempts').fetchone()[0],1)
+        self.queue.cleanup_step()
+        self.assertEqual(self.cleanup_state(key),'deleted')
+        self.assertEqual(self.storage.begin(meta())['receiptId'],key)
 
     def test_configuration_and_repeat_save_cannot_rename_accepted_item(self):
         key = self.save()['receiptId']
@@ -617,6 +634,58 @@ class NotificationTests(unittest.TestCase):
 
 
 class NamingTests(unittest.TestCase):
+    def test_eagle_jpeg_alias_and_emoji_name_variants_keep_title_and_index_checks(self):
+        self.assertEqual(canonical_ext('JPEG'),'jpg')
+        self.assertEqual(canonical_ext('jpg'),'jpg')
+        self.assertEqual(canonical_ext('PNG'),'png')
+        for emoji in ['🖤','🐰🤍','🩶☁']:
+            self.assertTrue(same_name('投稿-001','投稿'+emoji+'-001'))
+            self.assertTrue(same_name('投稿-1','投稿'+emoji+'-001'))
+        self.assertTrue(same_name('投稿🖤-1','投稿🖤-001'))
+        self.assertTrue(same_name('投稿\ufe0f-1','投稿🩶☁\ufe0f-001'))
+        self.assertFalse(same_name('投稿-1','投稿🩶☁\ufe0f-001'))
+        self.assertFalse(same_name('別名-001','投稿🖤-001'))
+        self.assertFalse(same_name('投稿-002','投稿🖤-001'))
+        self.assertFalse(same_name('投稿-001','投稿!-001'))
+        self.assertFalse(same_name('','🖤'))
+
+    def test_existing_jpeg_emoji_item_is_found_without_post(self):
+        with tempfile.TemporaryDirectory() as root:
+            client=EagleClient('http://127.0.0.1:41595/api',Path(root)/'token',
+                               '\\\\host\\FanboxSpool','library',Path(root))
+            item={'id':'item','name':'投稿-1','ext':'jpg','folders':['folder']}
+            client.request=lambda endpoint,payload=None: [item]
+            payload={'path':'\\\\host\\FanboxSpool\\key.jpeg','name':'投稿🖤-001','folderId':'folder'}
+            self.assertEqual(client.find(payload),[item])
+            item['ext']='png'
+            self.assertEqual(client.find(payload),[])
+
+    def test_marked_jpeg_emoji_item_verifies_bytes_and_other_metadata(self):
+        with tempfile.TemporaryDirectory() as root:
+            mount=Path(root)
+            original=mount/'images/item.info/投稿-1.jpg'
+            original.parent.mkdir(parents=True)
+            original.write_bytes(b'hello')
+            client=EagleClient('http://127.0.0.1:41595/api',mount/'token',
+                               '\\\\host\\FanboxSpool','library',mount)
+            client.ready=lambda:'library'
+            payload={'path':'\\\\host\\FanboxSpool\\key.jpeg','name':'投稿🖤-001',
+                     'website':meta()['registration']['website'],'folderId':'folder','tags':['tag'],'annotation':'marker'}
+            item={'id':'item','name':'投稿-1','ext':'jpg','size':5,'url':payload['website'],
+                  'folders':['folder'],'tags':['tag'],'annotation':'marker'}
+            job={'size':5,'sha256':hashlib.sha256(b'hello').hexdigest()}
+            client.verify(item,job,payload,'library')
+            for changes in [{'url':'wrong'},{'annotation':'other'},{'tags':[]},
+                            {'folders':[]},{'size':6},{'name':'別名-1'},{'ext':'png'}]:
+                with self.assertRaises(Held):
+                    client.verify({**item,**changes},job,payload,'library')
+            client.request=lambda endpoint,payload=None: [item]
+            job.update(intent={'payload':payload,'marker':'marker','library':'library'},item_id='item')
+            client.verify_done(job,mount/'key.jpeg')
+            original.write_bytes(b'wrong')
+            with self.assertRaises(Held):
+                client.verify(item,job,payload,'library')
+
     def test_cleanup_resolves_existing_destination_without_post_and_checks_recorded_id(self):
         with tempfile.TemporaryDirectory() as root:
             mount = Path(root)
