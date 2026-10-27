@@ -1,5 +1,6 @@
 """FANBOX file intake and durable FIFO. No source URL, cookie or arbitrary-path API."""
 import argparse
+from collections import Counter
 import hashlib
 import ipaddress
 import json
@@ -74,6 +75,7 @@ class SpoolStorage(Storage):
             CREATE TABLE IF NOT EXISTS runtime_state(name TEXT PRIMARY KEY,value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS configuration(singleton INTEGER PRIMARY KEY CHECK(singleton=1),revision TEXT NOT NULL,body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS notifications(seq INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,body TEXT NOT NULL,sent INTEGER NOT NULL DEFAULT 0);
+            CREATE INDEX IF NOT EXISTS notifications_kind_sent ON notifications(kind,sent);
         ''')
         self.queue = Queue(self.db, self.objects, spool, client)
         for row in self.db.execute("SELECT * FROM receipts WHERE state='committing'").fetchall():
@@ -226,17 +228,48 @@ class SpoolHandler(Handler):
 
 
 def notification_step(storage, url):
-    row = storage.db.execute('SELECT seq,body FROM notifications WHERE sent=0 ORDER BY seq LIMIT 1').fetchone()
-    if row is None or not url:
+    if not url:
         return
-    request = urllib.request.Request(url,row['body'].encode(),{'Content-Type':'text/plain; charset=utf-8'})
+    # Discard resolved holds and repeats, including unsent notifications from older versions.
+    with storage.db:
+        storage.db.execute('''UPDATE notifications SET sent=1 WHERE sent=0 AND kind LIKE 'eagle:%'
+            AND (NOT EXISTS (SELECT 1 FROM eagle_queue q WHERE q.receipt_key=substr(notifications.kind,7) AND q.state='held')
+                OR EXISTS (SELECT 1 FROM notifications old WHERE old.kind=notifications.kind AND old.sent=1))''')
+    pending = storage.db.execute('''SELECT n.kind,q.reason FROM notifications n
+        JOIN eagle_queue q ON q.receipt_key=substr(n.kind,7)
+        WHERE n.sent=0 AND n.kind LIKE 'eagle:%' AND q.state='held' GROUP BY n.kind,q.reason''').fetchall()
+    due = storage.db.execute("SELECT value FROM runtime_state WHERE name='eagle_notification_due'").fetchone()
+    now = time.time()
+    with storage.db:
+        if not pending:
+            storage.db.execute("DELETE FROM runtime_state WHERE name='eagle_notification_due'")
+        elif due is None:
+            storage.db.execute("INSERT INTO runtime_state VALUES ('eagle_notification_due',?)", (str(now+1800),))
+    # Capacity and cleanup notices keep their immediate delivery and cannot wait behind a digest.
+    row = storage.db.execute("SELECT seq,body FROM notifications WHERE sent=0 AND kind NOT LIKE 'eagle:%' ORDER BY seq LIMIT 1").fetchone()
+    if row is not None:
+        body = row['body']
+    elif pending and due is not None and now >= float(due['value']):
+        reasons = Counter('登録結果未確認' if item['reason']=='registration_unconfirmed'
+                          else '照合不一致' if 'mismatch' in (item['reason'] or '')
+                          else '重複判定不明' if 'ambiguous' in (item['reason'] or '')
+                          else 'その他' for item in pending)
+        detail = '、'.join(f'{name}{count}件' for name,count in sorted(reasons.items()))
+        body = f'FANBOX: Eagle登録の確認待ちが新たに{len(pending)}件あります（{detail}）。原本は保持しています。状態一覧で確認してください。'
+    else:
+        return
+    request = urllib.request.Request(url,body.encode(),{'Content-Type':'text/plain; charset=utf-8'})
     try:
         # The destination is a private local configuration, never an API field.
         with urllib.request.urlopen(request,timeout=10) as response:
             if response.status<200 or response.status>=300:
                 return
         with storage.db:
-            storage.db.execute('UPDATE notifications SET sent=1 WHERE seq=?',(row['seq'],))
+            if row is not None:
+                storage.db.execute('UPDATE notifications SET sent=1 WHERE seq=?',(row['seq'],))
+            else:
+                storage.db.executemany('UPDATE notifications SET sent=1 WHERE kind=?', ((item['kind'],) for item in pending))
+                storage.db.execute("DELETE FROM runtime_state WHERE name='eagle_notification_due'")
     except OSError:
         pass
 

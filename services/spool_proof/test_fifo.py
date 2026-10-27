@@ -12,7 +12,7 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 from fifo import Held, Unavailable, Queue
-from runtime import SpoolStorage, SpoolHandler, GIB, validate_config
+from runtime import SpoolStorage, SpoolHandler, GIB, validate_config, notification_step
 from eagle_client import EagleClient, same_name, folder_path
 from service import Rejected
 
@@ -466,6 +466,154 @@ class FifoTests(unittest.TestCase):
         self.assertEqual(self.cleanup_state(key), 'held')
         self.assertEqual(target.read_bytes(), b'hello')
         self.assertTrue((self.root/'objects'/(key+'.bin')).exists())
+
+
+class NotificationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.open_storage()
+        self.now = 1000
+        self.clock = patch('runtime.time.time', side_effect=lambda:self.now)
+        self.clock.start()
+        self.http = patch('runtime.urllib.request.urlopen')
+        self.send = self.http.start()
+        self.send.return_value.__enter__.return_value.status = 200
+
+    def open_storage(self):
+        self.storage = SpoolStorage(self.root/'data',self.root/'spool',FakeEagle(),
+                                    lambda _:SimpleNamespace(free=100*GIB))
+
+    def tearDown(self):
+        self.http.stop()
+        self.clock.stop()
+        self.storage.close()
+        self.tmp.cleanup()
+
+    def hold(self, key, reason='registration_unconfirmed'):
+        with self.storage.db:
+            self.storage.db.execute("INSERT INTO eagle_queue(receipt_key,state,reason) VALUES (?,'held',?)", (key,reason))
+        self.storage.transition('eagle:'+key,'held','old individual notice')
+
+    def step(self):
+        notification_step(self.storage,'https://example.invalid/notifications')
+
+    def test_holds_wait_thirty_minutes_and_send_one_reason_summary(self):
+        self.hold('a')
+        self.step()
+        self.now += 1799
+        self.hold('b')
+        self.hold('c','eagle_metadata_mismatch')
+        self.step()
+        self.send.assert_not_called()
+        self.now += 1
+        self.step()
+        self.assertEqual(self.send.call_count,1)
+        body = self.send.call_args.args[0].data.decode()
+        self.assertIn('新たに3件',body)
+        self.assertIn('登録結果未確認2件',body)
+        self.assertIn('照合不一致1件',body)
+        self.now += 3600
+        self.step()
+        self.assertEqual(self.send.call_count,1)
+
+    def test_resolved_before_delivery_is_excluded_and_empty_batch_resets(self):
+        self.hold('a')
+        self.step()
+        self.storage.queue.change('a',state='done')
+        self.now += 1800
+        self.step()
+        self.send.assert_not_called()
+        self.assertIsNone(self.storage.db.execute("SELECT value FROM runtime_state WHERE name='eagle_notification_due'").fetchone())
+        self.hold('b')
+        self.step()
+        self.send.assert_not_called()
+
+    def test_restart_keeps_due_time_and_notified_items(self):
+        self.hold('a')
+        self.step()
+        self.now += 1800
+        self.storage.close()
+        self.open_storage()
+        self.step()
+        self.assertEqual(self.send.call_count,1)
+        self.storage.close()
+        self.open_storage()
+        self.now += 3600
+        self.step()
+        self.assertEqual(self.send.call_count,1)
+
+    def test_only_new_items_enter_next_batch(self):
+        self.hold('a')
+        self.step()
+        self.now += 1800
+        self.step()
+        self.hold('b','ambiguous_duplicate')
+        self.step()
+        self.assertEqual(self.send.call_count,1)
+        self.now += 1800
+        self.step()
+        self.assertIn('新たに1件',self.send.call_args.args[0].data.decode())
+        self.assertIn('重複判定不明1件',self.send.call_args.args[0].data.decode())
+
+    def test_same_receipt_is_not_notified_again_after_state_changes(self):
+        self.hold('a')
+        self.step()
+        self.now += 1800
+        self.step()
+        self.storage.queue.change('a',state='pending')
+        self.storage.transition('eagle:a','pending')
+        self.storage.queue.change('a',state='held')
+        self.storage.transition('eagle:a','held','repeat')
+        self.now += 3600
+        self.step()
+        self.assertEqual(self.send.call_count,1)
+
+    def test_legacy_pending_duplicates_and_already_sent_holds_are_not_repeated(self):
+        self.hold('a')
+        self.hold('b')
+        with self.storage.db:
+            self.storage.db.execute("UPDATE notifications SET sent=1 WHERE kind='eagle:a'")
+            self.storage.db.execute("INSERT INTO notifications(kind,body) VALUES ('eagle:a','repeat')")
+            self.storage.db.execute("INSERT INTO notifications(kind,body) VALUES ('eagle:b','repeat')")
+        self.step()
+        self.now += 1800
+        self.step()
+        self.assertEqual(self.send.call_count,1)
+        self.assertIn('新たに1件',self.send.call_args.args[0].data.decode())
+        self.step()
+        self.assertEqual(self.send.call_count,1)
+
+    def test_capacity_and_cleanup_notices_do_not_wait_for_held_digest(self):
+        self.hold('a')
+        for kind in ['capacity','cleanup:a']:
+            self.storage.transition(kind,'held','immediate '+kind)
+            self.step()
+            self.assertEqual(self.send.call_args.args[0].data.decode(),'immediate '+kind)
+        self.assertEqual(self.send.call_count,2)
+
+    def test_failed_send_retries_only_still_held_items(self):
+        self.hold('a')
+        self.hold('b')
+        self.step()
+        self.now += 1800
+        self.send.side_effect = OSError('offline')
+        self.step()
+        self.assertEqual(self.storage.db.execute('SELECT count(*) FROM notifications WHERE sent=0').fetchone()[0],2)
+        self.send.side_effect = None
+        self.send.return_value.__enter__.return_value.status = 503
+        self.step()
+        self.assertEqual(self.storage.db.execute('SELECT count(*) FROM notifications WHERE sent=0').fetchone()[0],2)
+        self.storage.queue.change('a',state='done')
+        self.send.return_value.__enter__.return_value.status = 200
+        self.step()
+        self.assertIn('新たに1件',self.send.call_args.args[0].data.decode())
+
+    def test_no_url_keeps_notifications_without_network_access(self):
+        self.hold('a')
+        notification_step(self.storage,None)
+        self.send.assert_not_called()
+        self.assertEqual(self.storage.db.execute('SELECT sent FROM notifications').fetchone()[0],0)
 
 
 class NamingTests(unittest.TestCase):
