@@ -660,23 +660,23 @@ class NamingTests(unittest.TestCase):
             item['ext']='png'
             self.assertEqual(client.find(payload),[])
 
-    def test_marked_jpeg_emoji_item_verifies_bytes_and_other_metadata(self):
+    def test_marked_import_verifies_actual_file_even_when_eagle_changes_name(self):
         with tempfile.TemporaryDirectory() as root:
             mount=Path(root)
-            original=mount/'images/item.info/投稿-1.jpg'
+            original=mount/'images/item.info/投稿100-1.jpg'
             original.parent.mkdir(parents=True)
             original.write_bytes(b'hello')
             client=EagleClient('http://127.0.0.1:41595/api',mount/'token',
                                '\\\\host\\FanboxSpool','library',mount)
             client.ready=lambda:'library'
-            payload={'path':'\\\\host\\FanboxSpool\\key.jpeg','name':'投稿🖤-001',
+            payload={'path':'\\\\host\\FanboxSpool\\key.jpeg','name':'投稿100%🖤-001',
                      'website':meta()['registration']['website'],'folderId':'folder','tags':['tag'],'annotation':'marker'}
-            item={'id':'item','name':'投稿-1','ext':'jpg','size':5,'url':payload['website'],
+            item={'id':'item','name':'投稿100-1','ext':'jpg','size':5,'url':payload['website'],
                   'folders':['folder'],'tags':['tag'],'annotation':'marker'}
             job={'size':5,'sha256':hashlib.sha256(b'hello').hexdigest()}
             client.verify(item,job,payload,'library')
             for changes in [{'url':'wrong'},{'annotation':'other'},{'tags':[]},
-                            {'folders':[]},{'size':6},{'name':'別名-1'},{'ext':'png'}]:
+                            {'folders':[]},{'size':6},{'name':'../escape'},{'name':None},{'name':''},{'id':'../x'},{'ext':'png'}]:
                 with self.assertRaises(Held):
                     client.verify({**item,**changes},job,payload,'library')
             client.request=lambda endpoint,payload=None: [item]
@@ -722,26 +722,6 @@ class NamingTests(unittest.TestCase):
         self.assertEqual(folder_path('作者/x.png'),['FANBOX','作者'])
         self.assertTrue(same_name('投稿-1','投稿-001'))
         self.assertFalse(same_name('別名-1','投稿-001'))
-
-    def test_eagle_original_size_hash_metadata_and_library_are_checked(self):
-        with tempfile.TemporaryDirectory() as root:
-            mount = Path(root)
-            original = mount/'images'/'item.info'/'投稿-001.png'
-            original.parent.mkdir(parents=True)
-            original.write_bytes(b'hello')
-            client = EagleClient('http://127.0.0.1:41595/api',mount/'token','\\\\host\\FanboxSpool','library',mount)
-            client.ready = lambda:'library'
-            payload = {'path':'\\\\host\\FanboxSpool\\key.png','name':'投稿-1','website':'https://www.fanbox.cc/@creator/posts/123','folderId':'folder','tags':['tag'],'annotation':'marker'}
-            item = {'id':'item','name':'投稿-001','ext':'png','size':5,'url':payload['website'],'folders':['folder'],'tags':['tag'],'annotation':'marker'}
-            job = {'size':5,'sha256':hashlib.sha256(b'hello').hexdigest()}
-            client.verify(item,job,payload,'library')
-            for changes in ({'url':'wrong'},{'size':6},{'tags':[]},{'folders':[]},{'id':'../x'}):
-                with self.assertRaises(Held):
-                    client.verify({**item,**changes},job,payload,'library')
-            original.write_bytes(b'wrong')
-            with self.assertRaises(Held):
-                client.verify(item,job,payload,'library')
-
 
 class ApiTests(unittest.TestCase):
     def test_authenticated_api_and_local_only_upload_boundary(self):

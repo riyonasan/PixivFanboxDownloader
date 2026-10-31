@@ -145,7 +145,7 @@ class EagleClient:
         if self.ready() != library:
             raise Held('eagle_library_changed')
         if (not isinstance(item.get('id'), str) or not re.fullmatch(r'[A-Za-z0-9_-]+',item['id'])
-                or not same_name(item.get('name',''),payload['name'])
+                or not isinstance(item.get('name'), str) or not item['name']
                 or re.search(r'[\\/\x00-\x1f]',item['name'])
                 or canonical_ext(item.get('ext','')) != canonical_ext(payload['path'].rsplit('.',1)[-1])
                 or item.get('size') != job['size'] or item.get('url') != payload['website']
